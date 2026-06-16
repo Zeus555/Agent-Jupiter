@@ -35,6 +35,12 @@ pm2_out.txt
 scratch/
 *_out.txt
 
+# Exception: documentation images ARE tracked (despite the global image ignore above)
+!docs/
+!docs/*.png
+!docs/*.jpg
+!docs/*.jpeg
+
 # --- Large bundles / backups (should not be in the repo) ---
 *.zip
 *.tar

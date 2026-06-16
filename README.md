@@ -6,6 +6,10 @@
 
 ---
 
+![Jupiter Agent API — interactive Swagger UI](docs/swagger-ui.png)
+
+*The agent exposes a full REST API (interactive Swagger at `/api-docs`): price, trading, and X-API-Key-protected wallet management.*
+
 ## The problem
 
 Trading on a platform you **don't own** leaves you two poor options to feed your decisions:
