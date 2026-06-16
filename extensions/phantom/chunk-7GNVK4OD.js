@@ -1,0 +1,4 @@
+import{r as y}from"./chunk-GBFCVK7L.js";import{b as u}from"./chunk-MNQOPN6Y.js";import{c as f}from"./chunk-X3QTRQZS.js";import{Ba as r,L as k,M as C,Y as d}from"./chunk-VKBPNC3B.js";import{a as o,g as p,i as T,n as m}from"./chunk-WKJYWAXG.js";T();m();var e=p(k(),1);var s=p(C(),1),G=3e3,M=f.div`
+  cursor: pointer;
+`,B=o(({copyString:b,children:g,alignment:h})=>{let{t:n}=d(),[t,E,i]=u(b),[L,a]=(0,e.useState)(!1),c=n(t?"pastParticipleCopied":"accountHeaderCopyToClipboard"),P=t?r.colors.legacy.spotBase:r.colors.legacy.black,R=o(()=>a(!0),"showTooltip"),A=o(()=>a(!1),"hideTooltip"),S=o(()=>{E(),i(!0)},"handleCopyToClipboard");return(0,e.useEffect)(()=>{let l;return t&&(l=setTimeout(()=>{i(!1)},G)),()=>{l&&clearTimeout(l)}},[t,i]),(0,s.jsx)(y,{label:c,ariaLabel:c,color:P,isVisible:L,triggerParams:{onMouseEnter:R,onMouseLeave:A},alignment:h,children:(0,s.jsx)(M,{onClick:S,children:g})})},"CopyTooltip");export{B as a};
+//# sourceMappingURL=chunk-7GNVK4OD.js.map

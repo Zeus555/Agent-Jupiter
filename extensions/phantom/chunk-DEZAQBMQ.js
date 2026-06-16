@@ -1,0 +1,10 @@
+import{a as h,b as S}from"./chunk-K7GILTCA.js";import{s as C}from"./chunk-GBFCVK7L.js";import{c as L}from"./chunk-X3QTRQZS.js";import{Ba as b,L as I,M as g}from"./chunk-VKBPNC3B.js";import{g as i,i as d,n as u}from"./chunk-WKJYWAXG.js";d();u();var o=i(I(),1);d();u();var E=i(I(),1);var z=i(g(),1),y=E.default.memo(({showBadge:t=!0})=>(0,z.jsx)(C,{aspectRatio:1,width:"100%",height:"100%",backgroundColor:b.colors.legacy.elementBase,align:"flex-end",borderRadius:"6px",padding:"15px",children:t?(0,z.jsx)(C,{width:"100px",height:"10px",borderRadius:"6px",backgroundColor:b.colors.legacy.borderDiminished}):null}));var e=i(g(),1),X=3,Y=L.img`
+  transition: transform 0.5s ease;
+  object-fit: cover;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  transform: ${t=>t.zoomState==="zoomedIn"?`scale(${X})`:"scale(1)"};
+  cursor: ${t=>{if(t.isZoomControlsEnabled){if(t.zoomState==="zoomedIn")return"zoom-out";if(t.zoomState==="zoomedOut")return"zoom-in"}else return"inherit"}};
+`,V=o.default.memo(t=>{let{uri:s,showSkeletonBadge:M=!1,isZoomControlsEnabled:r=!1}=t,[p,c]=(0,o.useState)("loading"),[l,f]=(0,o.useState)("zoomedOut"),a=(0,o.useRef)(null),m=(0,o.useCallback)(n=>{let x=n.nativeEvent.layerX,P=n.nativeEvent.layerY,Z=n.currentTarget.offsetWidth,B=n.currentTarget.offsetHeight,$=x/Z*100,A=P/B*100;a.current&&(a.current.style.transformOrigin=`${$}% ${A}%`)},[]),k=(0,o.useCallback)(n=>{r&&(f(l==="zoomedIn"?"zoomedOut":"zoomedIn"),m(n))},[m,l,f,r]),v=(0,o.useCallback)(n=>{l==="zoomedOut"||!r||m(n)},[m,l,r]),w=(0,o.useCallback)(()=>{r&&(a.current&&(a.current.style.transformOrigin="center"),f("zoomedOut"))},[r]),O=(0,o.useMemo)(()=>s!==null&&s.trim()!==""?s:null,[s]),R=(0,o.useCallback)(()=>{c("success")},[c]),T=(0,o.useCallback)(()=>{c("error")},[c]);return(0,e.jsxs)(e.Fragment,{children:[p==="error"?(0,e.jsx)(h,{children:(0,e.jsx)(S,{type:"image"})}):(0,e.jsx)(h,{children:(0,e.jsx)(Y,{ref:a,onMouseMove:v,onMouseLeave:w,onClick:k,src:O??"",onLoad:R,onError:T,zoomState:l,isZoomControlsEnabled:r})}),p==="loading"?(0,e.jsx)(y,{showBadge:M}):null]})});export{y as a,V as b};
+//# sourceMappingURL=chunk-DEZAQBMQ.js.map

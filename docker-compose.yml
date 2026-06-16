@@ -1,0 +1,27 @@
+# Isolated deployment of the PRC Jupiter agent.
+#
+#   docker compose up -d --build      # build + start
+#   docker compose logs -f            # follow logs
+#   docker compose down               # stop
+#
+# The wallet/browser profile lives in the ./user_data volume so it survives restarts.
+# Secrets come from .env (env_file). PHANTOM_EXTENSION_PATH is overridden to the in-image
+# path so a Windows path in .env doesn't leak in.
+services:
+  jupiter-agent:
+    build: .
+    image: prc-agent-jupiter:latest
+    container_name: prc-agent-jupiter
+    restart: unless-stopped
+    init: true                 # proper PID 1 / signal handling for the browser subprocess
+    shm_size: "512m"           # Chromium uses --disable-dev-shm-usage; keep low for the 3GB host
+    env_file:
+      - .env
+    environment:
+      - PHANTOM_EXTENSION_PATH=/app/extensions/phantom
+      - BROWSER_VISIBLE=false
+    ports:
+      - "3011:3011"
+      - "6080:6080"   # on-demand noVNC visual wallet-onboarding session
+    volumes:
+      - ./user_data:/app/user_data

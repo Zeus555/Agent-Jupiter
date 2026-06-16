@@ -1,0 +1,2 @@
+import{z as n}from"./chunk-VKBPNC3B.js";import{g as r,i as o,n as t}from"./chunk-WKJYWAXG.js";o();t();var e=r(n(),1),p=e.default.parse(typeof navigator<"u"?navigator.userAgent:"Chrome"),_=360,E=600,c=59,H="modal",T=9999,a="https://help.phantom.com/hc/en-us/requests/new?ticket_form_id=1500002752382";export{p as a,_ as b,E as c,c as d,H as e,T as f,a as g};
+//# sourceMappingURL=chunk-OXHZN6EN.js.map

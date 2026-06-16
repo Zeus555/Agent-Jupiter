@@ -1,0 +1,22 @@
+import{a as f,c as m}from"./chunk-STA4XWFW.js";import{a as k}from"./chunk-CACZWADY.js";import"./chunk-FQ4IUREX.js";import{B as w,U as F}from"./chunk-QDOMAMUW.js";import"./chunk-G3ZMZLJV.js";import"./chunk-2M5IA4XR.js";import"./chunk-DQWLAPQA.js";import"./chunk-GBFCVK7L.js";import"./chunk-QOPHZSCS.js";import"./chunk-C2TTXVXF.js";import"./chunk-2ICRCYBD.js";import"./chunk-YLF46ZAV.js";import"./chunk-2EHWXEZV.js";import"./chunk-YKCWXP4A.js";import"./chunk-NL3GGYE5.js";import"./chunk-RZGOTFWC.js";import"./chunk-J4XA5VC7.js";import"./chunk-BC332QPU.js";import"./chunk-COY2AKMU.js";import"./chunk-MNQOPN6Y.js";import"./chunk-A6ZZ6VBL.js";import"./chunk-EUEXC4MQ.js";import"./chunk-CM3IULXA.js";import"./chunk-Z5R57KKX.js";import"./chunk-OENHJLUF.js";import"./chunk-QD564YCF.js";import"./chunk-S27Q2UQU.js";import"./chunk-F3K4WVVR.js";import"./chunk-ZRXZH5P6.js";import"./chunk-M5GDXRS4.js";import"./chunk-N3C6FBKY.js";import"./chunk-CTKHELYY.js";import"./chunk-7AGHSKOZ.js";import"./chunk-IENUT57A.js";import"./chunk-GB2PTM7B.js";import{c as T,d as b}from"./chunk-5W3EK5R3.js";import{_a as s}from"./chunk-TASZSJEG.js";import{c as o}from"./chunk-X3QTRQZS.js";import"./chunk-UWVKE6UK.js";import"./chunk-WVRYN4MY.js";import"./chunk-TFYO45HT.js";import"./chunk-6LIVARTH.js";import"./chunk-QHYUU3AO.js";import"./chunk-GY6QHOJ7.js";import"./chunk-2AOCY26Y.js";import"./chunk-OXHZN6EN.js";import"./chunk-SQYWWEVC.js";import"./chunk-U3L4PRI4.js";import"./chunk-A2EKZXK7.js";import"./chunk-ZQZJIKZB.js";import"./chunk-YJCG6GWC.js";import"./chunk-WLD4SJJO.js";import"./chunk-2MEZL2PN.js";import{Ib as l,Pb as x,cc as B}from"./chunk-7YHYDYR3.js";import"./chunk-W3XZ57NO.js";import"./chunk-RWWUDPHX.js";import{Ba as a,L as P,M as h,Ma as I,Y as C}from"./chunk-VKBPNC3B.js";import"./chunk-FNC6PQ53.js";import"./chunk-5QQLABHI.js";import{a as d,g as r,i as y,n as g}from"./chunk-WKJYWAXG.js";y();g();var v=r(P(),1);var e=r(h(),1),N=o.div`
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  overflow-y: scroll;
+`,S=o.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 90px;
+`,V=o(s).attrs({size:28,weight:500,color:a.colors.legacy.textBase})`
+  margin: 16px;
+`,$=o(s).attrs({size:14,weight:400,lineHeight:17,color:a.colors.legacy.textDiminished})`
+  max-width: 275px;
+
+  span {
+    color: white;
+  }
+`,q=d(({networkId:t,token:c})=>{let{t:n}=C(),{handleHideModalVisibility:p}=F(),u=(0,v.useCallback)(()=>{p("insufficientBalance")},[p]),R=t&&x(B(l.getChainID(t))),{canBuy:D,openBuy:M}=w({caip19:R||"",context:"modal",analyticsEvent:"fiatOnrampFromInsufficientBalance"}),i=t?l.getTokenSymbol(t):n("tokens");return(0,e.jsxs)(N,{children:[(0,e.jsx)("div",{children:(0,e.jsxs)(S,{children:[(0,e.jsx)(k,{type:"failure",backgroundWidth:75}),(0,e.jsx)(V,{children:n("insufficientBalancePrimaryText",{tokenSymbol:i})}),(0,e.jsx)($,{children:n("insufficientBalanceSecondaryText",{tokenSymbol:i})}),c?(0,e.jsxs)(I,{borderRadius:8,gap:1,marginTop:32,width:"100%",children:[(0,e.jsx)(f,{label:n("insufficientBalanceRemaining"),children:(0,e.jsx)(m,{color:a.colors.legacy.spotNegative,children:`${c.balance} ${i}`})}),(0,e.jsx)(f,{label:n("insufficientBalanceRequired"),children:(0,e.jsx)(m,{children:`${c.required} ${i}`})})]}):null]})}),D?(0,e.jsx)(b,{primaryText:n("buyAssetInterpolated",{tokenSymbol:i}),onPrimaryClicked:M,secondaryText:n("commandCancel"),onSecondaryClicked:u}):(0,e.jsx)(T,{onClick:u,children:n("commandCancel")})]})},"InsufficientBalance"),X=q;export{q as InsufficientBalance,X as default};
+//# sourceMappingURL=InsufficientBalance-7CCPUYTL.js.map

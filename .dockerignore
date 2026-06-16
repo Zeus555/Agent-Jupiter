@@ -1,0 +1,41 @@
+# Dependencies & build (reinstalled inside the image)
+node_modules
+dist
+
+# Secrets / wallet state — provided at runtime via env_file + volumes, never baked in
+.env
+.env.*
+wallet_address.txt
+wallet_seed.txt
+user_data
+
+# Runtime / logs / pm2 (not used inside the container; Docker handles restarts)
+.pm2
+Log
+*.log
+pm2_out.txt
+ecosystem.config.cjs
+
+# Heavy / irrelevant artifacts
+backups
+stable
+scratch
+Temporal
+test_dir
+test_minimized
+test_minimized
+*.zip
+*.tar
+*.png
+*.jpeg
+*.jpg
+extensions/phantom.crx
+
+# Windows-only helper (no-op on Linux; not needed in the image)
+src/visibility.ps1
+start.bat
+start_agent.bat
+
+# VCS / editor
+.git
+.gitignore

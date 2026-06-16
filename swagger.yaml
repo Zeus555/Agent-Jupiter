@@ -1,0 +1,679 @@
+openapi: 3.0.0
+info:
+  title: Jupiter Agent API
+  description: API for automating operations on Jupiter Perpetuals via Phantom Wallet.
+  version: 1.0.0
+servers:
+  - url: http://192.168.1.91:3011
+    description: Containerized agent (sentinel016)
+  - url: http://localhost:3011
+    description: Local server
+paths:
+  /connect:
+    post:
+      summary: Connect Phantom to Jupiter Perpetuals
+      description: |
+        Navigates to `https://jup.ag/perps` and clicks the "Connect Wallet" button.
+        It then handles the Phantom approval popup automatically.
+      responses:
+        '200':
+          description: Connection initiated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Connection initiated"
+                  durationMs:
+                    type: integer
+                    example: 850
+  /wallet/status:
+    get:
+      summary: Active wallet status
+      description: Returns the active wallet address and whether it is connected to Jupiter.
+      responses:
+        '200':
+          description: Wallet status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  address:
+                    type: string
+                    example: "YOUR_WALLET_PUBLIC_KEY"
+                  connected:
+                    type: boolean
+                    example: true
+  /wallet/import:
+    post:
+      summary: Import (and activate) a wallet from its recovery phrase
+      description: |
+        Resets the Phantom profile and imports the given 12/24-word recovery phrase, making it the
+        active wallet. This is how you CHANGE the active wallet on demand.
+        Requires the `X-API-Key` header (must match `WALLET_API_KEY` in `.env`).
+        The recovery phrase is never logged or returned.
+
+        Note: Phantom's onboarding can be unreliable headless; if the address is not confirmed,
+        use POST /wallet/onboard-session instead (visual session).
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recoveryPhrase]
+              properties:
+                recoveryPhrase:
+                  type: string
+                  example: "word1 word2 word3 ... word12"
+                password:
+                  type: string
+                  description: Optional. Defaults to PHANTOM_PASSWORD in .env.
+      responses:
+        '200':
+          description: Wallet imported and activated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  address:
+                    type: string
+                    example: "YOUR_WALLET_PUBLIC_KEY"
+        '400':
+          description: Missing or invalid recovery phrase (must be 12 or 24 words)
+        '401':
+          description: Missing or invalid X-API-Key
+        '503':
+          description: WALLET_API_KEY not configured on the server
+  /wallet/forget:
+    post:
+      summary: Remove the wallet from the agent
+      description: |
+        Wipes the Phantom profile (the wallet is removed from this agent; price serving continues).
+        Requires the `X-API-Key` header.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Wallet removed
+        '401':
+          description: Missing or invalid X-API-Key
+  /wallet/onboard-session:
+    post:
+      summary: Start a visual (noVNC) onboarding session
+      description: |
+        Opens a temporary, password-protected visual session (noVNC) so a human can create/import
+        or connect the wallet by hand — used because Phantom's onboarding/approval popups do not
+        render reliably under headless automation. Returns a URL + a one-time VNC password.
+        While the session is open, price warming is paused. When finished, call
+        POST /wallet/onboard-session/close. Requires the `X-API-Key` header.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Visual session started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    example: "http://192.168.1.91:6080/vnc.html?autoconnect=1&resize=scale"
+                  vncPassword:
+                    type: string
+                    example: "a1b2c3d4"
+                  phantomOnboardingUrl:
+                    type: string
+                    example: "chrome-extension://bfnaelmomeimhlpmgjnjophhpkkoljpa/onboarding.html"
+        '401':
+          description: Missing or invalid X-API-Key
+  /wallet/onboard-session/close:
+    post:
+      summary: Close the visual onboarding session
+      description: |
+        Stops the noVNC session, resumes normal operation and reconnects the wallet.
+        Requires the `X-API-Key` header.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Session closed; agent resumed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  address:
+                    type: string
+                    example: "YOUR_WALLET_PUBLIC_KEY"
+        '401':
+          description: Missing or invalid X-API-Key
+  /health:
+    get:
+      summary: Health / liveness probe
+      description: |
+        Reports cache freshness, the price warmer state and the active page URL. Add `?deep=true`
+        to also verify the Jupiter page is ready (heavier).
+      parameters:
+        - in: query
+          name: deep
+          schema:
+            type: string
+          description: "Set to 'true' to also check the browser/page readiness."
+      responses:
+        '200':
+          description: Service healthy
+        '503':
+          description: Service degraded
+  /wallet/balance:
+    get:
+      summary: Get wallet balances
+      description: |
+        Retrieves real-time token balances from the connected wallet by scraping the Jupiter interface.
+        Supports cycling through SOL, WBTC, ETH, and USDC.
+        
+        **➡️ Windows CMD Test Command:**
+        ```cmd
+        curl -X GET "http://localhost:3011/wallet/balance?tokens=SOL,USDC"
+        ```
+      parameters:
+        - in: query
+          name: tokens
+          schema:
+            type: string
+          description: Comma-separated list of token symbols (e.g., "SOL,WBTC,USDC"). Defaults to SOL, WBTC, ETH, USDC.
+          example: "SOL,USDC"
+      responses:
+        '200':
+          description: Token balances retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  balances:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    example:
+                      SOL: "1.24"
+                      USDC: "500.00"
+                  durationMs:
+                    type: integer
+                    example: 5600
+  /trade/long:
+    post:
+      summary: Open a Long position
+      description: |
+        Executes a LONG trade on Jupiter Perpetuals for the specified cryptocurrency asset.
+        
+        **➡️ Windows CMD Test Command:**
+        ```cmd
+        curl -X POST http://localhost:3011/trade/long -H "Content-Type: application/json" -d "{\"asset\": \"WBTC\", \"collateral\": \"SOL\", \"amount\": 0.1, \"leverage\": 5, \"takeProfit\": 68500, \"stopLoss\": 67450}"
+        ```
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                asset:
+                  type: string
+                  description: The cryptocurrency asset to trade (e.g., "SOL", "WBTC", "ETH").
+                  example: "WBTC"
+                collateral:
+                  type: string
+                  description: The asset to pay with (e.g., "SOL", "WBTC", "USDC"). Defaults to "USDC".
+                  example: "SOL"
+                amount:
+                  type: number
+                  description: The amount of collateral to trade.
+                  example: 0.1
+                leverage:
+                  type: number
+                  description: Leverage multiplier (e.g. 1.1, 100).
+                  example: 10
+                takeProfit:
+                  type: number
+                  description: Take Profit Price.
+                  example: 150.50
+                stopLoss:
+                  type: number
+                  description: Stop Loss Price.
+                  example: 140.00
+      responses:
+        '200':
+          description: Trade order initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Long trade initiated"
+                  durationMs:
+                    type: integer
+                    example: 4500
+  /trade/short:
+    post:
+      summary: Open a Short position
+      description: |
+        Executes a SHORT trade on Jupiter Perpetuals for the specified cryptocurrency asset.
+        
+        **➡️ Windows CMD Test Command:**
+        ```cmd
+        curl -X POST http://localhost:3011/trade/short -H "Content-Type: application/json" -d "{\"asset\": \"WBTC\", \"collateral\": \"SOL\", \"amount\": 0.1, \"leverage\": 5, \"takeProfit\": 60000, \"stopLoss\": 70000}"
+        ```
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                asset:
+                  type: string
+                  description: The cryptocurrency asset to trade (e.g., "SOL", "WBTC", "ETH").
+                  example: "WBTC"
+                collateral:
+                  type: string
+                  description: The asset to pay with (e.g., "SOL", "WBTC", "USDC"). Defaults to "USDC".
+                  example: "SOL"
+                amount:
+                  type: number
+                  description: The amount of collateral to trade.
+                  example: 0.1
+                leverage:
+                  type: number
+                  description: Leverage multiplier (e.g. 1.1, 100).
+                  example: 5
+                takeProfit:
+                  type: number
+                  description: Take Profit Price (Downside).
+                  example: 80.00
+                stopLoss:
+                  type: number
+                  description: Stop Loss Price (Upside).
+                  example: 100.00
+      responses:
+        '200':
+          description: Trade order initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Short trade initiated"
+                  durationMs:
+                    type: integer
+                    example: 4600
+  /trade/estimate:
+    post:
+      summary: Estimate trade capability
+      description: |
+        Get Entry Price, Liquidation Price, Fees, and Slippage for a potential trade.
+        
+        **➡️ Windows CMD Test Command:**
+        ```cmd
+        curl -X POST http://localhost:3011/trade/estimate -H "Content-Type: application/json" -d "{\"asset\": \"WBTC\", \"side\": \"long\", \"amount\": 100, \"leverage\": 7}"
+        ```
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                asset:
+                  type: string
+                  description: The cryptocurrency asset to estimate (e.g., "SOL", "WBTC").
+                  example: "WBTC"
+                side:
+                  type: string
+                  description: Trade side ('long' or 'short'). Defaults to 'long'.
+                  example: "long"
+                amount:
+                  type: number
+                  description: Amount in USDC.
+                  example: 100
+                leverage:
+                  type: number
+                  description: Leverage multiplier.
+                  example: 7
+
+      responses:
+        '200':
+          description: Estimation details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entryPrice:
+                    type: string
+                    example: "$86.50"
+                  liquidationPrice:
+                    type: string
+                    example: "$78.20"
+                  slippage:
+                    type: string
+                    example: "Max: 2%"
+                  totalFees:
+                    type: string
+                    example: "≈ 6.50 USD"
+                  durationMs:
+                    type: integer
+                    example: 2500
+  /trade/info:
+    get:
+      summary: Get all open positions
+      description: |
+        Returns a list of all currently open perpetual positions scraped directly from the active Jupiter page.
+        This endpoint is **read-only and does not navigate** — it reads the DOM of the already-loaded page,
+        making it very fast (similar speed to `/price`).
+
+        **➡️ Windows CMD Test Command:**
+        ```cmd
+        curl -X GET http://localhost:3011/trade/info
+        ```
+      responses:
+        '200':
+          description: Open positions retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                    description: Number of open positions
+                    example: 1
+                  positions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index:
+                          type: integer
+                          example: 0
+                        asset:
+                          type: string
+                          example: "WBTC"
+                        side:
+                          type: string
+                          enum: [long, short, unknown]
+                          example: "long"
+                        size:
+                          type: string
+                          nullable: true
+                          example: "$7,000.00"
+                        collateral:
+                          type: string
+                          nullable: true
+                          example: "$700.00"
+                        entryPrice:
+                          type: string
+                          nullable: true
+                          example: "$74,500.00"
+                        markPrice:
+                          type: string
+                          nullable: true
+                          example: "$75,200.00"
+                        liqPrice:
+                          type: string
+                          nullable: true
+                          example: "$68,100.00"
+                        pnl:
+                          type: string
+                          nullable: true
+                          example: "+$65.50 (+0.94%)"
+                        takeProfit:
+                          type: string
+                          nullable: true
+                          example: "$80,000.00"
+                        stopLoss:
+                          type: string
+                          nullable: true
+                          example: "$70,000.00"
+                  durationMs:
+                    type: integer
+                    example: 45
+        '500':
+          description: Internal Server Error
+  /trade/history:
+    get:
+      summary: Get recent trade history
+      description: |
+        Returns the most recent trades from the "History" tab of the Jupiter Perpetuals interface.
+        This endpoint switches to the "History" tab and scrapes the trade list.
+        
+        **➡️ Windows CMD Test Command:**
+        ```cmd
+        curl -X GET http://localhost:3011/trade/history
+        ```
+      responses:
+        '200':
+          description: Trade history retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                    example: 5
+                  history:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index:
+                          type: integer
+                          example: 0
+                        fullDescription:
+                          type: string
+                          example: "Long / Buy WBTC"
+                        size:
+                          type: string
+                          example: "$1,000.00"
+                        price:
+                          type: string
+                          example: "$77,000"
+                        pnl:
+                          type: string
+                          example: "-$10.00"
+                        time:
+                          type: string
+                          example: "2m ago"
+                        status:
+                          type: string
+                          example: "Confirmed"
+                  durationMs:
+                    type: integer
+                    example: 2100
+  /trade/close:
+    post:
+      summary: Close all positions
+      description: Attempts to close all open positions on Jupiter Perpetuals.
+      responses:
+        '200':
+          description: Close operation initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Close operation initiated"
+                  durationMs:
+                    type: integer
+                    example: 3200
+  /trade/update:
+    post:
+      summary: Update position (TP/SL)
+      description: |
+        Modifies the Take Profit (TP) and Stop Loss (SL) values for an existing active position. This simulates clicking the edit pencil on the active orders table and pushing the confirm button.
+        
+        **➡️ Windows CMD Test Command:**
+        ```cmd
+        curl -X POST http://localhost:3011/trade/update -H "Content-Type: application/json" -d "{\\"asset\\": \\"WBTC\\", \\"takeProfit\\": 73600, \\"stopLoss\\": 74850}"
+        ```
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                asset:
+                  type: string
+                  description: The cryptocurrency asset of the active position to update.
+                  example: "WBTC"
+                takeProfit:
+                  type: number
+                  description: The new Take Profit target price.
+                  example: 73600
+                stopLoss:
+                  type: number
+                  description: The new Stop Loss limit price.
+                  example: 74850
+      responses:
+        '200':
+          description: Update scheduled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Update operation completed successfully"
+                  asset:
+                    type: string
+                    example: "WBTC"
+                  updates:
+                    type: object
+                    properties:
+                      takeProfit:
+                        type: number
+                        example: 73600
+                      stopLoss:
+                        type: number
+                        example: 74850
+                  durationMs:
+                    type: integer
+                    example: 30361
+  /price:
+    get:
+      summary: Get current asset price
+      description: |
+        Returns the current real-time price of a specific cryptocurrency asset from Jupiter.
+        
+        **➡️ Windows CMD Test Command:**
+        ```cmd
+        curl -X GET "http://localhost:3011/price?asset=WBTC"
+        ```
+      parameters:
+        - in: query
+          name: asset
+          schema:
+            type: string
+          description: The cryptocurrency asset to check (e.g., "SOL", "WBTC", "ETH"). Defaults to "SOL" if not provided.
+          example: "WBTC"
+      responses:
+        '200':
+          description: Current asset price
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  price:
+                    type: string
+                    example: "$68,450.25"
+                  asset:
+                    type: string
+                    example: "WBTC"
+                  durationMs:
+                    type: integer
+                    example: 2500
+        '503':
+          description: Service Unavailable - Busy Trading. Returned if a trade is in progress and the requested asset requires UI navigation.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Service temporarily unavailable: A trade is in progress and the requested asset requires UI navigation."
+                  code:
+                    type: string
+                    example: "BUSY_TRADING"
+                  durationMs:
+                    type: integer
+                    example: 10
+  /browser/visibility:
+    post:
+      summary: Toggle browser window visibility
+      description: |
+        Shows or hides the agent's browser window using Windows native Win32 API calls.
+        
+        **NOTE:** By default, the browser is initialized in **HIDDEN** mode.
+        
+        **➡️ Windows CMD Test Command:**
+        ```cmd
+        curl -X POST http://localhost:3011/browser/visibility -H "Content-Type: application/json" -d "{\"visible\": false}"
+        ```
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - visible
+              properties:
+                visible:
+                  type: boolean
+                  description: "Set to false to hide the window from desktop/taskbar. Set to true to show/restore it."
+                  example: false
+      responses:
+        '200':
+          description: Visibility updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Browser visibility set to false"
+                  durationMs:
+                    type: integer
+                    example: 150
+        '500':
+          description: Native command failure
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        API key required for wallet-management endpoints (/wallet/import, /wallet/forget,
+        /wallet/onboard-session, /wallet/onboard-session/close). Must match WALLET_API_KEY in .env.
+        In Swagger UI, click "Authorize" and paste the key.

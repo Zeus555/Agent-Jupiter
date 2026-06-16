@@ -1,0 +1,59 @@
+# --- Secrets / wallet (NEVER commit) ---
+.env
+.env.*
+wallet_address.txt
+wallet_seed.txt
+wallet_debug.*
+Semilla/
+semilla/
+Datos/
+Script/
+Semilla
+Datos
+
+# --- Browser profile (contains the live Phantom wallet state) ---
+user_data/
+scripts/Temporal/
+Temporal/
+test_minimized/
+test_status_user_data/
+
+# --- Dependencies / build ---
+node_modules/
+dist/
+
+# --- Logs / runtime ---
+Log/
+*.log
+pm2_out.txt
+.pm2/
+
+# --- Debug artifacts & captures ---
+*.png
+*.jpeg
+*.jpg
+scratch/
+*_out.txt
+
+# --- Large bundles / backups (should not be in the repo) ---
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+backups/
+stable/
+
+# --- Misc test/scratch/runtime dirs ---
+test_dir/
+audit/data/
+Log
+Datos/
+
+# --- Junk / one-off scratch files ---
+/120
+src/test_*.ts
+
+# --- OS ---
+Thumbs.db
+.DS_Store
