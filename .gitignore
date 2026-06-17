@@ -35,11 +35,14 @@ pm2_out.txt
 scratch/
 *_out.txt
 
-# Exception: documentation images ARE tracked (despite the global image ignore above)
-!docs/
-!docs/*.png
-!docs/*.jpg
-!docs/*.jpeg
+# Exception: ONLY specific, vetted documentation assets are tracked. The global image ignore
+# stays in force for everything else in docs/ — in particular the raw onboarding screenshots
+# (which contain a real API key / addresses) and the generated slide frames must NEVER be published.
+!docs/swagger-ui.png
+!docs/onboarding-poster.jpg
+docs/ShowBrowser_*.png
+docs/slides/
+docs/*.raw.png
 
 # --- Large bundles / backups (should not be in the repo) ---
 *.zip

@@ -183,7 +183,15 @@ Phantom's onboarding/approval popups (MV3) don't render reliably under headless 
 
 From then on, the agent **reconnects on its own** after restarts (Jupiter stays a trusted app in Phantom). Wallets can be swapped on demand via `/wallet/import` (deterministic) or a new visual session.
 
-<!-- TODO: drop a recorded walkthrough of the noVNC onboarding at docs/onboarding.gif and embed it here -->
+### Visual walkthrough
+
+A 60-second walkthrough of the noVNC wallet-onboarding flow (sensitive values redacted):
+
+<video src="https://github.com/Zeus555/Agent-Jupiter/raw/main/docs/onboarding.mp4" controls muted width="100%"></video>
+
+[![Visual wallet onboarding walkthrough](docs/onboarding-poster.jpg)](docs/onboarding.mp4)
+
+> ▶ If the player doesn't load inline, click the image above (or [download the MP4](docs/onboarding.mp4)).
 
 ## Reproduce the accuracy audit
 
