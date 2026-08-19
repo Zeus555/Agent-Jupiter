@@ -159,8 +159,17 @@ paths:
     get:
       summary: Health / liveness probe
       description: |
-        Reports cache freshness, the price warmer state and the active page URL. Add `?deep=true`
-        to also verify the Jupiter page is ready (heavier).
+        Reports cache freshness, the price warmer state, page-lock contention and the active page
+        URL. Does not touch the browser. Add `?deep=true` to also verify the Jupiter page is ready
+        (heavier: it takes the page lock).
+
+        Returns **503 / `degraded`** when the warmer is not running, or when any asset currently
+        being polled has no price newer than 60s — `price.staleTracked` names them. Alert on this:
+        an earlier version computed freshness and then left it out of the check, so a cache frozen
+        for four days still reported `ok`.
+
+        `pageLock.waiting` is the number of callers queued for the browser page. Sustained
+        non-zero values mean something is holding the page and requests are backing up behind it.
       parameters:
         - in: query
           name: deep
@@ -170,8 +179,93 @@ paths:
       responses:
         '200':
           description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok, degraded]
+                    example: "ok"
+                  version:
+                    type: string
+                    example: "2.4.0"
+                  uptimeSec:
+                    type: integer
+                    example: 119
+                  pageReady:
+                    type: boolean
+                    nullable: true
+                    description: Only evaluated with ?deep=true; null otherwise.
+                    example: null
+                  pageUrl:
+                    type: string
+                    example: "https://jup.ag/perps/short/SOL-WBTC"
+                  price:
+                    type: object
+                    properties:
+                      warmerRunning:
+                        type: boolean
+                        example: true
+                      tracked:
+                        type: array
+                        description: Assets requested recently, i.e. the ones the warmer keeps hot.
+                        items:
+                          type: string
+                        example: ["WBTC"]
+                      prices:
+                        type: object
+                        description: Cache snapshot, keyed by asset, each with its price and ageMs.
+                        additionalProperties:
+                          type: object
+                          properties:
+                            price:
+                              type: string
+                            ageMs:
+                              type: integer
+                        example:
+                          WBTC:
+                            price: "$68141.09"
+                            ageMs: 178
+                      hasFreshPrice:
+                        type: boolean
+                        description: At least one cached price is under 15s old.
+                        example: true
+                      staleTracked:
+                        type: array
+                        description: Tracked assets with no price newer than 60s. Non-empty means degraded.
+                        items:
+                          type: string
+                        example: []
+                  balance:
+                    type: object
+                    properties:
+                      lastUpdated:
+                        type: integer
+                        nullable: true
+                      stale:
+                        type: boolean
+                      hasData:
+                        type: boolean
+                  pageLock:
+                    type: object
+                    description: Contention on the single browser page.
+                    properties:
+                      locked:
+                        type: boolean
+                        example: false
+                      waiting:
+                        type: integer
+                        description: Callers queued for the page lock.
+                        example: 0
+                  durationMs:
+                    type: integer
+                    example: 1
         '503':
-          description: Service degraded
+          description: |
+            Service degraded. Inspect `price.staleTracked` (assets the warmer is failing to
+            refresh) and `pageLock.waiting` (requests backing up behind a held page).
   /wallet/balance:
     get:
       summary: Get wallet balances
@@ -579,18 +673,34 @@ paths:
     get:
       summary: Get current asset price
       description: |
-        Returns the current real-time price of a specific cryptocurrency asset from Jupiter.
-        
-        **➡️ Windows CMD Test Command:**
-        ```cmd
-        curl -X GET "http://localhost:3011/price?asset=WBTC"
+        Returns the current price of an asset, read from the Jupiter Perpetuals UI (never from an
+        external price API). Supported assets: `WBTC`, `SOL`, `ETH`.
+
+        Prices come from an in-memory cache that a background warmer keeps hot, so a request for an
+        asset already being polled answers in well under a millisecond (`durationMs: 0`). Asking
+        for an asset also registers demand for it, which is what puts it on the warmer's list.
+
+        **Cold reads are slow.** The first request for an asset after a restart has to navigate and
+        wait for the Jupiter SPA to hydrate — roughly 6-9s in practice, with up to
+        `PRICE_COLD_TIMEOUT_MS` (15s) allowed. **Set your client timeout above 15s.** A shorter one
+        (4s, say) aborts precisely that first request and looks like the agent never answers.
+
+        Validate the value before using it: `price` is the string as displayed, e.g. `"$68392.22"`.
+        Strip `$` and `,` and require what remains to be fully numeric.
+
+        **➡️ Test command:**
+        ```bash
+        curl "http://192.168.1.91:3011/price?asset=WBTC"
         ```
       parameters:
         - in: query
           name: asset
           schema:
             type: string
-          description: The cryptocurrency asset to check (e.g., "SOL", "WBTC", "ETH"). Defaults to "SOL" if not provided.
+            enum: [WBTC, SOL, ETH]
+            default: SOL
+          description: |
+            Asset to price. The aliases `token` and `symbol` are accepted too. Defaults to "SOL".
           example: "WBTC"
       responses:
         '200':
@@ -602,15 +712,32 @@ paths:
                 properties:
                   price:
                     type: string
-                    example: "$68,450.25"
+                    description: Price exactly as the UI displays it, currency symbol included.
+                    example: "$68392.22"
                   asset:
                     type: string
                     example: "WBTC"
+                  ageMs:
+                    type: integer
+                    description: |
+                      Age of the reading being served. 0 means it was read from the UI during this
+                      request (a cold read); anything else came from the cache.
+                    example: 231
+                  stale:
+                    type: boolean
+                    description: |
+                      True once the reading is older than PRICE_SERVE_TTL (15s). Still served, but
+                      the warmer is behind. Check it if your logic is sensitive to freshness.
+                    example: false
                   durationMs:
                     type: integer
-                    example: 2500
-        '503':
-          description: Service Unavailable - Busy Trading. Returned if a trade is in progress and the requested asset requires UI navigation.
+                    description: Server-side time for this request. 0 on a cache hit.
+                    example: 0
+        '500':
+          description: |
+            No valid price could be read from the UI within PRICE_COLD_TIMEOUT_MS, or a wallet
+            operation is in progress and no cached value exists (error prefixed `MAINTENANCE:`).
+            Not worth retrying immediately — the page is most likely not rendering the market.
           content:
             application/json:
               schema:
@@ -618,10 +745,27 @@ paths:
                 properties:
                   error:
                     type: string
-                    example: "Service temporarily unavailable: A trade is in progress and the requested asset requires UI navigation."
+                    example: "[getPrice] FATAL: Could not read a valid price for WBTC from the UI."
+                  durationMs:
+                    type: integer
+                    example: 15082
+        '503':
+          description: |
+            Temporarily unavailable and **safe to retry**. Two causes, told apart by `code`:
+            `BUSY_TRADING` (a trade is running and serving this asset would navigate the page away)
+            and `PAGE_BUSY` (another operation held the browser page lock too long).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Service temporarily unavailable: the browser page is busy. Retry shortly."
                   code:
                     type: string
-                    example: "BUSY_TRADING"
+                    enum: [BUSY_TRADING, PAGE_BUSY]
+                    example: "PAGE_BUSY"
                   durationMs:
                     type: integer
                     example: 10
