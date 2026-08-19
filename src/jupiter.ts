@@ -8,14 +8,55 @@ import { pageLock } from './mutex.js';
 
 dotenv.config();
 
-async function withPageLock<T>(fn: () => Promise<T>): Promise<T> {
-    const release = await pageLock.acquire();
+async function withPageLock<T>(fn: () => Promise<T>, timeoutMs?: number): Promise<T> {
+    const release = await pageLock.acquire(timeoutMs);
     try {
         return await fn();
     } finally {
         release();
     }
 }
+
+// How long a request-path caller waits for the page lock before giving up with PAGE_BUSY.
+// Background loops still queue unbounded; only user-facing calls fail fast.
+const PAGE_LOCK_TIMEOUT_MS = Number(process.env.PAGE_LOCK_TIMEOUT_MS) || 10000;
+// Cap on the balance scraper's dropdown click. Playwright's 30s default was applied while
+// holding the page lock, so one blocked click stalled every other caller for half a minute.
+const BALANCE_CLICK_TIMEOUT_MS = Number(process.env.BALANCE_CLICK_TIMEOUT_MS) || 5000;
+
+/** Snapshot of page-lock contention, for /health. */
+export const getLockMeta = (): { locked: boolean; waiting: number } => ({
+    locked: pageLock.isLocked,
+    waiting: pageLock.waiting
+});
+
+/**
+ * Closes any modal left open on the Jupiter page. A full-screen overlay
+ * ([data-slot="alert-dialog-overlay"], fixed inset-0 z-50) swallows pointer events, so every
+ * later click retries until it times out — all of it under the page lock. Best effort, cheap,
+ * and safe to call before any interaction.
+ */
+const dismissOverlays = async (page: Page): Promise<void> => {
+    const overlayOpen = (): Promise<boolean> => page.evaluate(`
+        (function() {
+            const sel = '[data-slot="alert-dialog-overlay"], [data-slot="dialog-overlay"], div[role="dialog"]';
+            return Array.from(document.querySelectorAll(sel)).some(function(e) {
+                const r = e.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+            });
+        })()
+    `).then(v => !!v).catch(() => false);
+
+    for (let i = 0; i < 3; i++) {
+        if (!(await overlayOpen())) return;
+        logger.info('[dismissOverlays] Modal overlay detected; sending Escape.');
+        await page.keyboard.press('Escape').catch(() => {});
+        await page.waitForTimeout(250);
+    }
+    if (await overlayOpen()) {
+        logger.warn('[dismissOverlays] Overlay still open after 3 attempts; clicks may be blocked.');
+    }
+};
 
 const JUPITER_PERPS_URL = 'https://jup.ag/perps';
 const MAX_CONSECUTIVE_FAILURES = 5;
@@ -76,6 +117,18 @@ const PRICE_WARM_INTERVAL = Number(process.env.PRICE_WARM_INTERVAL) || 1000;
 const PRICE_WARM_STALE = Number(process.env.PRICE_WARM_STALE) || 12000;
 // Per-read DOM polling granularity (ms) — tighter than the old 1000ms for faster cold reads.
 const PRICE_POLL_MS = Number(process.env.PRICE_POLL_MS) || 250;
+// Wall-clock budget for a BLOCKING cold read from the UI (ms). It has to cover a full SPA
+// navigation plus hydration on jup.ag, which routinely needs well over 5s.
+// This used to be expressed as an attempt count (15) which, at PRICE_POLL_MS=250, capped a
+// cold read at 3.75s — shorter than the page needs to paint a price. Result: whenever the
+// cache was empty, /price polled a page that had not rendered yet and threw FATAL after ~4s.
+// Budgeting in milliseconds means tuning PRICE_POLL_MS can no longer shorten the deadline.
+const PRICE_COLD_TIMEOUT_MS = Number(process.env.PRICE_COLD_TIMEOUT_MS) || 15000;
+// Same budget for the background warmer. Shorter than the cold path because the warmer holds
+// the page lock while it runs and must not stall trades/API calls — but still long enough to
+// survive one navigation, otherwise a newly tracked asset never warms and every request for
+// it falls through to a blocking cold read. (Was 8 attempts = 2s, i.e. never enough.)
+const PRICE_WARM_TIMEOUT_MS = Number(process.env.PRICE_WARM_TIMEOUT_MS) || 8000;
 // Absolute ceiling: a cached price older than this is considered unusable and forces a
 // (blocking) cold read. As long as the warmer is healthy, prices stay far fresher, so
 // the API answers from cache in ms; this only guards against a stalled/broken warmer.
@@ -121,7 +174,12 @@ const getCurrentMarket = (url: string): string | null => {
  */
 const inRange = (symbol: string, priceStr: string | null): boolean => {
     if (!priceStr) return false;
-    const val = parseFloat(String(priceStr).replace(/[$,]/g, ''));
+    // Whole-string match, for the same reason as readMarkPrice's num(): parseFloat() would
+    // accept "24H Change 5.88%" as 24 and wave a label through as a tradeable price. This is
+    // the last gate before the value lands in priceCache and goes out over the API.
+    const clean = String(priceStr).trim().replace(/[$,\s]/g, '');
+    if (!/^\d+(\.\d+)?$/.test(clean)) return false;
+    const val = parseFloat(clean);
     if (isNaN(val) || val <= 0) return false;
     if (symbol === 'WBTC') return val >= 10000;
     if (symbol === 'ETH') return val >= 100 && val < 10000;
@@ -145,11 +203,15 @@ const inRange = (symbol: string, priceStr: string | null): boolean => {
 const readMarkPrice = async (page: Page): Promise<string | null> => {
     const found = await page.evaluate(`
         (function() {
+            // The WHOLE string must be a number. parseFloat() alone reads "24H Change\n5.88%"
+            // as 24, which is how a 24h-change widget got cached and served as a SOL price.
             const num = (p) => {
                 if (!p) return null;
-                const clean = String(p).trim().replace(/[$,]/g, '');
+                const raw = String(p).trim();
+                const clean = raw.replace(/[$,\s]/g, '');
+                if (!/^\d+(\.\d+)?$/.test(clean)) return null;
                 const val = parseFloat(clean);
-                return (isNaN(val) || val <= 0) ? null : String(p).trim();
+                return (isNaN(val) || val <= 0) ? null : raw;
             };
 
             // Strategy A: page title leading number — e.g. "169.42 | SOL-PERP | Jupiter".
@@ -191,7 +253,12 @@ const readMarkPrice = async (page: Page): Promise<string | null> => {
  * price is read, updating the cache. Does NOT acquire the page lock — the caller
  * must hold it. Returns the price string, or null if it couldn't be read.
  */
-const refreshPrice = async (page: Page, symbol: string, maxAttempts: number): Promise<string | null> => {
+const refreshPrice = async (page: Page, symbol: string, budgetMs: number): Promise<string | null> => {
+    const deadline = Date.now() + budgetMs;
+    // A modal left open can hide the Mark Price from the DOM, which freezes the cache until
+    // someone restarts the container. Clearing it here lets the warmer self-heal: once a
+    // tracked asset goes stale past PRICE_WARM_STALE it lands in this function and recovers.
+    await dismissOverlays(page);
     if (getCurrentMarket(page.url()) !== symbol) {
         if (isTradeInProgress) {
             // Don't yank the page to another market mid-trade.
@@ -202,11 +269,14 @@ const refreshPrice = async (page: Page, symbol: string, maxAttempts: number): Pr
         await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
     }
 
-    for (let i = 0; i < maxAttempts; i++) {
-        // Only trust a reading once the URL confirms the page settled on this market
-        // (the SPA may still be transitioning right after goto).
+    // Poll until the deadline. Keep polling while the URL has not settled yet: right after a
+    // goto/reload the SPA is still transitioning, and those are exactly the ticks the old
+    // attempt-count budget burned through before giving up.
+    while (Date.now() < deadline) {
+        // Only trust a reading once the URL confirms the page settled on this market.
         if (getCurrentMarket(page.url()) === symbol) {
-            const price = await readMarkPrice(page);
+            // A read can throw if a navigation lands mid-evaluate; that is a retry, not a failure.
+            const price = await readMarkPrice(page).catch(() => null);
             if (inRange(symbol, price)) {
                 priceCache[symbol] = { price: price as string, timestamp: Date.now() };
                 reportSuccess();
@@ -215,6 +285,7 @@ const refreshPrice = async (page: Page, symbol: string, maxAttempts: number): Pr
         }
         await page.waitForTimeout(PRICE_POLL_MS);
     }
+    logger.warn(`[refreshPrice] No valid price for ${symbol} within ${budgetMs}ms (url: ${page.url()}).`);
     return null;
 };
 
@@ -259,7 +330,7 @@ export const startPriceWarmer = (page: Page) => {
                         .sort((a, b) => (priceCache[a]?.timestamp || 0) - (priceCache[b]?.timestamp || 0));
 
                     if (stale.length > 0 && !isTradeInProgress) {
-                        await refreshPrice(page, stale[0]!, 8).catch(() => {});
+                        await refreshPrice(page, stale[0]!, PRICE_WARM_TIMEOUT_MS).catch(() => {});
                     }
                 });
             }
@@ -352,15 +423,19 @@ const fetchBalancesFromUI = async (page: Page, tokens: string[]): Promise<Record
             return {};
         }
 
+        // Clear any stuck modal before interacting: its overlay intercepts pointer events and
+        // would otherwise burn the full click timeout on every retry, under the page lock.
+        await dismissOverlays(page);
+
         const amountInput = page.getByPlaceholder('0.00').filter({ hasNotText: 'x' }).first();
         const tokenSelector = amountInput.locator('xpath=../..').locator('button').first();
-        
+
         if (!(await tokenSelector.isVisible({ timeout: 2000 }))) {
             logger.warn('[fetchBalancesFromUI] tokenSelector is not visible.');
             return {};
         }
-        
-        await tokenSelector.click();
+
+        await tokenSelector.click({ timeout: BALANCE_CLICK_TIMEOUT_MS });
         
         // Dynamic wait: Wait until the dialog is visible and contains at least one row with a numeric balance
         let results: Record<string, string> = {};
@@ -507,7 +582,7 @@ export const isPageReadyInternal = async (page: Page): Promise<boolean> => {
 export const isPageReady = async (page: Page): Promise<boolean> => {
     return withPageLock(async () => {
         return await isPageReadyInternal(page);
-    });
+    }, PAGE_LOCK_TIMEOUT_MS);
 };
 
 const connectWalletInternal = async (page: Page) => {
@@ -645,6 +720,30 @@ const countPositions = async (page: Page): Promise<number> => {
     }).catch(() => 0);
 };
 
+/**
+ * Cache-only price lookup. Records demand and answers straight from memory WITHOUT touching
+ * the browser — no page lock, no DOM read. Returns null when a blocking cold read is needed.
+ *
+ * Routes should try this BEFORE resolving a Page. The /price route used to call
+ * getPage(url, isPageReady) first, and isPageReady takes the page lock and runs a
+ * whole-document querySelectorAll — so even a guaranteed cache hit queued behind the 1Hz
+ * warmer and paid for a page-wide DOM scan, and a failed health check reloaded the page on
+ * the request path, which then guaranteed the following cold read found nothing.
+ */
+export const peekPrice = (asset: string = 'SOL'): { price: string; asset: string; ageMs: number; stale: boolean } | null => {
+    const symbol = asset.toUpperCase().trim();
+    requestedAssets.set(symbol, Date.now());
+
+    const cached = priceCache[symbol];
+    if (!cached) return null;
+
+    const age = Date.now() - cached.timestamp;
+    // During maintenance the browser is being reset, so the cache is all we can offer.
+    if (maintenanceMode) return { price: cached.price, asset: symbol, ageMs: age, stale: true };
+    if (age < PRICE_STALE_MAX) return { price: cached.price, asset: symbol, ageMs: age, stale: age >= PRICE_SERVE_TTL };
+    return null;
+};
+
 export const getPrice = async (page: Page, asset: string = 'SOL'): Promise<{ price: string; asset: string; ageMs: number; stale: boolean }> => {
     const symbol = asset.toUpperCase().trim();
 
@@ -683,7 +782,7 @@ export const getPrice = async (page: Page, asset: string = 'SOL'): Promise<{ pri
         }
 
         logger.info(`[getPrice] Cold read for ${symbol} (no usable cache). Reading from UI...`);
-        const price = await refreshPrice(page, symbol, 15);
+        const price = await refreshPrice(page, symbol, PRICE_COLD_TIMEOUT_MS);
         if (price) {
             logger.info(`[getPrice] SUCCESS: ${symbol} = ${price}`);
             return { price, asset: symbol, ageMs: 0, stale: false };

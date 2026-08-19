@@ -2,7 +2,7 @@ import express from 'express';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { getPage, closeBrowser, getBrowserContext, setWindowVisibility, getBrowserPid, getCachedPageUrl, resetProfile } from './browser.js';
-import { connectWallet, openPosition, closePosition, getPrice, isPageReady, getTradeEstimation, getBalances, getBalanceMeta, getPriceMeta, getOpenPositions, getTradeHistory, getTradeHtml, updatePosition, startBalanceUpdates, startPriceWarmer, getWalletName, setMaintenanceMode, isMaintenance } from './jupiter.js';
+import { connectWallet, openPosition, closePosition, getPrice, peekPrice, isPageReady, getTradeEstimation, getBalances, getBalanceMeta, getPriceMeta, getLockMeta, getOpenPositions, getTradeHistory, getTradeHtml, updatePosition, startBalanceUpdates, startPriceWarmer, getWalletName, setMaintenanceMode, isMaintenance } from './jupiter.js';
 import { unlockWallet, getWalletAddressFromPhantom, getSavedWalletAddress, importWallet } from './phantom.js';
 import { startVncSession, stopVncSession, isVncActive } from './vnc.js';
 import swaggerUi from 'swagger-ui-express';
@@ -229,9 +229,16 @@ app.get('/health', async (req, res) => {
         }
     }
 
-    // Healthy if the warmer is running and at least one fresh price exists.
+    // Healthy if the warmer is running AND every asset someone is actually polling has a
+    // usable price. hasFreshPrice used to be computed and then left out of `ok`, so a cache
+    // frozen for four days still reported status:"ok" and nothing alerted.
+    // Assets nobody has requested are not a fault — there is nothing to keep warm.
     const hasFreshPrice = Object.values(priceMeta.prices).some(p => p.ageMs < 15000);
-    const ok = priceMeta.warmerRunning && (req.query.deep !== 'true' || pageReady === true);
+    const staleTracked = priceMeta.tracked.filter(sym => (priceMeta.prices[sym]?.ageMs ?? Infinity) >= 60000);
+    const lock = getLockMeta();
+    const ok = priceMeta.warmerRunning
+        && staleTracked.length === 0
+        && (req.query.deep !== 'true' || pageReady === true);
 
     res.status(ok ? 200 : 503).json({
         status: ok ? 'ok' : 'degraded',
@@ -239,8 +246,9 @@ app.get('/health', async (req, res) => {
         uptimeSec: Math.round(process.uptime()),
         pageReady,
         pageUrl: getCachedPageUrl('https://jup.ag/perps'),
-        price: { ...priceMeta, hasFreshPrice },
+        price: { ...priceMeta, hasFreshPrice, staleTracked },
         balance: balanceMeta,
+        pageLock: lock,
         durationMs: Date.now() - start
     });
 });
@@ -631,7 +639,11 @@ app.get('/debug/click', requireDebug, async (req, res) => {
             
             // Capture screenshot
             const fs = await import('fs');
-            const screenPath = path.resolve(__dirname, '../../scratch/debug_modal.png');
+            // Temporal/ del propio proyecto. Antes era '../../scratch/', que desde
+            // src/ escapa a la raiz de la unidad y creaba D:\scratch.
+            const debugDir = path.resolve(__dirname, '../Temporal');
+            fs.mkdirSync(debugDir, { recursive: true });
+            const screenPath = path.join(debugDir, 'debug_modal.png');
             await page.screenshot({ path: screenPath });
             
             // Capture HTML
@@ -639,7 +651,7 @@ app.get('/debug/click', requireDebug, async (req, res) => {
                 const dialog = document.querySelector('div[role="dialog"], .bg-v3-modal-bg, [data-dialog]');
                 return dialog ? dialog.outerHTML : "NO DIALOG IN DOM";
             });
-            fs.writeFileSync(path.resolve(__dirname, '../../scratch/modal.html'), modalHtml);
+            fs.writeFileSync(path.join(debugDir, 'modal.html'), modalHtml);
             
             res.json({ message: 'Clicked and captured', screenshot: screenPath, htmlLen: modalHtml.length });
         } else {
@@ -689,6 +701,13 @@ app.get('/price', async (req, res) => {
         const rawAsset = (req.query.asset || req.query.token || req.query.symbol || req.query.Asset);
         const asset = (Array.isArray(rawAsset) ? rawAsset[0] : rawAsset) as string || 'SOL';
         
+        // FAST PATH: answer from the warm cache without resolving a Page. getPage's
+        // isPageReady validator takes the page lock and scans the whole document (and can
+        // trigger a reload), which turned every cache hit into a lock-contended DOM scan.
+        const fast = peekPrice(asset);
+        if (fast) return res.json({ ...fast, durationMs: Date.now() - start });
+
+        // COLD PATH only: no usable cache, so it is worth healing the page before reading.
         const page = await getPage('https://jup.ag/perps', isPageReady);
         const result = await getPrice(page, asset);
         res.json({ ...result, durationMs: Date.now() - start });
@@ -698,6 +717,15 @@ app.get('/price', async (req, res) => {
                 error: 'Service temporarily unavailable: A trade is in progress and the requested asset requires UI navigation.',
                 code: 'BUSY_TRADING',
                 durationMs: Date.now() - start 
+            });
+        }
+        // The page lock was held too long by something else. Answer fast so the caller can
+        // retry, instead of leaving the request queued indefinitely.
+        if (error.message === 'PAGE_BUSY') {
+            return res.status(503).json({
+                error: 'Service temporarily unavailable: the browser page is busy. Retry shortly.',
+                code: 'PAGE_BUSY',
+                durationMs: Date.now() - start
             });
         }
         res.status(500).json({ error: error.message, durationMs: Date.now() - start });
