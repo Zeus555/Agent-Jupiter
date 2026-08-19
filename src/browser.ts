@@ -50,6 +50,38 @@ export const setWindowVisibility = (visible: boolean, pid?: number | null): Prom
     });
 };
 
+/**
+ * Removes Chromium's stale profile-lock files from a persistent user_data dir.
+ *
+ * These are always SYMLINKS, and SingletonLock's target is a name ("<hostname>-<pid>"), not a
+ * real file — a dangling symlink. fs.rmSync(path, { force: true }) resolves the target, sees
+ * ENOENT, and because force:true swallows "not found" it returns silently WITHOUT unlinking.
+ * So the previous rmSync-based cleanup was a no-op for precisely the files it targeted.
+ * fs.unlinkSync operates on the link itself and does remove it.
+ *
+ * This only bites when the hostname changes: after "docker compose restart" the hostname is
+ * unchanged, so Chromium sees a dead PID of its own host and steals the lock. After
+ * "docker compose up -d --build" the container is RECREATED with a new hostname, Chromium cannot verify a
+ * process "on another computer", and refuses the profile outright — the agent then fails
+ * every request with "Target page, context or browser has been closed".
+ */
+const clearProfileLocks = (userDataDir: string): void => {
+    for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+        const target = path.join(userDataDir, f);
+        try {
+            fs.unlinkSync(target);
+            logger.info(`[initBrowser] Removed stale profile lock: ${f}`);
+        } catch (e: any) {
+            if (e?.code === 'ENOENT') continue;             // nothing to clean — normal
+            if (e?.code === 'EISDIR' || e?.code === 'EPERM') {
+                try { fs.rmSync(target, { force: true, recursive: true }); } catch {}
+                continue;
+            }
+            logger.warn(`[initBrowser] Could not remove ${f}: ${e?.message}`);
+        }
+    }
+};
+
 export const initBrowser = async () => {
     if (launchPromise) return launchPromise;
 
@@ -65,9 +97,7 @@ export const initBrowser = async () => {
             // container recreations; a Singleton* lock written by a previous container (a
             // different "computer"/PID) makes Chromium refuse the profile and fail to open
             // tabs ("profile appears to be in use by another Chromium process").
-            for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
-                try { fs.rmSync(path.join(userDataDir, f), { force: true, recursive: true }); } catch {}
-            }
+            clearProfileLocks(userDataDir);
 
             logger.force(`Initializing browser (Mode: HEADFUL + OS TOGGLE)`);
 
@@ -89,9 +119,7 @@ export const initBrowser = async () => {
             let lastErr: any = null;
             for (let attempt = 1; attempt <= 3; attempt++) {
                 try {
-                    for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
-                        try { fs.rmSync(path.join(userDataDir, f), { force: true, recursive: true }); } catch {}
-                    }
+                    clearProfileLocks(userDataDir);
                     context = await chromium.launchPersistentContext(userDataDir, {
                         headless: false,
                         args: launchArgs,
