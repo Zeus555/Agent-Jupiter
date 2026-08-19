@@ -932,6 +932,173 @@ app.get('/debug/price-sources', requireDebug, async (req, res) => {
     }
 });
 
+/**
+ * Browser-side probe of the trade form, shared by /debug/balance-dom's before/after-scroll
+ * passes. It mirrors fetchBalancesFromUI's locator chain in plain DOM terms
+ * (getByPlaceholder('0.00').first() -> xpath=../.. -> button) and reports what each candidate
+ * button actually is, plus a hit test at its centre.
+ *
+ * Kept as a STRING on purpose, and not only for the reason readMarkPrice documents: tsx
+ * compiles with esbuild's keep-names, which rewrites every *named* function -- including a
+ * `const brief = function(){}` nested inside an evaluate callback -- into `__name(fn, "brief")`,
+ * a helper that does not exist in the page. A function argument therefore dies with
+ * "ReferenceError: __name is not defined"; a string is never touched by the transform.
+ * As in readMarkPrice: NO backslash escapes anywhere in here, not even inside a comment.
+ */
+const PROBE_TRADE_FORM = `
+(function() {
+    var out = {
+        url: location.href,
+        title: document.title,
+        viewport: { w: window.innerWidth, h: window.innerHeight, scrollY: Math.round(window.scrollY) }
+    };
+
+    var rect = function(n) {
+        var r = n.getBoundingClientRect();
+        return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+    };
+
+    var brief = function(n) {
+        if (!n) return null;
+        var cs = window.getComputedStyle(n);
+        return {
+            tag: n.tagName,
+            id: n.id || undefined,
+            cls: String(n.className || '').slice(0, 160),
+            text: String(n.innerText || '').slice(0, 60),
+            rect: rect(n),
+            css: { position: cs.position, zIndex: cs.zIndex, pointerEvents: cs.pointerEvents, opacity: cs.opacity, visibility: cs.visibility, display: cs.display }
+        };
+    };
+
+    var probe = function(el) {
+        var r = el.getBoundingClientRect();
+        var cx = r.left + r.width / 2;
+        var cy = r.top + r.height / 2;
+        var stack = document.elementsFromPoint(cx, cy).slice(0, 5);
+        var top = stack[0] || null;
+        return {
+            self: brief(el),
+            html: String(el.outerHTML || '').slice(0, 900),
+            disabled: !!el.disabled,
+            ariaDisabled: el.getAttribute('aria-disabled'),
+            clickPoint: { x: Math.round(cx), y: Math.round(cy) },
+            offscreen: cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight,
+            // Playwright's actionability check, in one boolean: a click at the centre only
+            // lands if the topmost element there is the target or lives inside it.
+            hitTargetIsSelf: !!(top && (top === el || el.contains(top))),
+            hitStack: stack.map(brief)
+        };
+    };
+
+    // getByPlaceholder is a case-insensitive substring match, so match it the same way here
+    // rather than querying [placeholder="0.00"] exactly.
+    var placeholders = Array.prototype.slice.call(document.querySelectorAll('[placeholder]')).filter(function(e) {
+        return String(e.getAttribute('placeholder') || '').toLowerCase().indexOf('0.00') !== -1;
+    });
+    out.placeholders = placeholders.map(function(e) {
+        return { placeholder: e.getAttribute('placeholder'), tag: e.tagName, cls: String(e.className || '').slice(0, 120), rect: rect(e) };
+    });
+
+    var input = placeholders[0];
+    if (!input) { out.note = 'NO element with a 0.00 placeholder in the DOM'; return JSON.stringify(out); }
+    out.amountInput = probe(input);
+
+    // xpath=../.. -- the exact container the scraper then searches for buttons.
+    var container = input.parentElement && input.parentElement.parentElement;
+    if (!container) { out.note = 'amount input has no grandparent'; return JSON.stringify(out); }
+    out.containerHtml = String(container.outerHTML || '').slice(0, 3500);
+
+    var buttons = Array.prototype.slice.call(container.querySelectorAll('button'));
+    out.buttonCount = buttons.length;
+    out.buttons = buttons.slice(0, 10).map(function(b, i) {
+        var p = probe(b);
+        p.idx = i;
+        return p;
+    });
+
+    // How many buttons each wider ancestor would offer, so a container that is simply too
+    // narrow (or too wide) shows up immediately.
+    var anc = [];
+    var cur = input.parentElement;
+    for (var i = 0; i < 6 && cur; i++) {
+        anc.push({
+            level: i + 1,
+            tag: cur.tagName,
+            cls: String(cur.className || '').slice(0, 120),
+            buttonCount: cur.querySelectorAll('button').length,
+            rect: rect(cur)
+        });
+        cur = cur.parentElement;
+    }
+    out.ancestors = anc;
+
+    // Anything dialog-ish that is mounted right now. dismissOverlays only probes the viewport
+    // centre, so an overlay covering the form but not the middle of the screen escapes it.
+    out.overlays = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"], [data-slot="alert-dialog-overlay"], [data-slot="dialog-overlay"]')).slice(0, 8).map(brief);
+
+    // The dialog that is doing the blocking, markup and all: its heading tells us WHICH modal
+    // it is, and its controls are what a caller would have to answer to clear it.
+    // Reach the portal through the overlay itself: [data-base-ui-portal] alone matches the
+    // notifications viewport, which mounts first and would shadow the dialog.
+    var ov = document.querySelector('[data-slot="alert-dialog-overlay"], [data-slot="dialog-overlay"]');
+    var portal = (ov && ov.parentElement) || document.querySelector('[data-slot="alert-dialog-portal"]');
+    out.dialogPortalHtml = portal ? String(portal.outerHTML || '').slice(0, 6000) : null;
+    out.dialogControls = portal ? Array.prototype.slice.call(portal.querySelectorAll('button, input, [role="checkbox"], label')).slice(0, 12).map(function(c) {
+        return {
+            tag: c.tagName,
+            role: c.getAttribute('role'),
+            type: c.getAttribute('type'),
+            text: String(c.innerText || '').slice(0, 50),
+            checked: c.getAttribute('aria-checked') || c.getAttribute('data-checked') || (c.checked === true ? 'true' : undefined),
+            cls: String(c.className || '').slice(0, 100)
+        };
+    }) : null;
+
+    return JSON.stringify(out);
+})()
+`;
+
+// Read-only DOM dump around the trade-form amount input, for diagnosing the balance scraper's
+// "locator.click: Timeout 5000ms exceeded" WITHOUT clicking anything. isVisible() passing while
+// click() times out means the element exists but nothing can reach it, so the useful question
+// is not "is it there" but "what is on top of it" -- which is what this answers.
+app.get('/debug/balance-dom', requireDebug, async (req, res) => {
+    const start = Date.now();
+    const out: Record<string, any> = {};
+    try {
+        // No isPageReady validator on purpose: this must not reload or navigate the page under
+        // investigation (same reasoning as /debug/price-sources).
+        const page = await getPage('https://jup.ag/perps');
+        out.pageUrl = page.url();
+
+        // Playwright's own view of the production chain, as a cross-check on the DOM probe.
+        // Counts read 0 while the SPA is mid-navigation, so a zero here is not proof of a
+        // missing form -- re-run once the page settles.
+        const placeholders = page.getByPlaceholder('0.00');
+        const filtered = placeholders.filter({ hasNotText: 'x' });
+        const tokenSelector = filtered.first().locator('xpath=../..').locator('button').first();
+        out.locator = {
+            placeholderCount: await placeholders.count().catch(() => -1),
+            filteredCount: await filtered.count().catch(() => -1),
+            resolvedCount: await tokenSelector.count().catch(() => -1),
+            isVisible: await tokenSelector.isVisible().catch(() => null)
+        };
+
+        out.beforeScroll = JSON.parse(await page.evaluate(PROBE_TRADE_FORM) as string);
+
+        // click() scrolls the target into view first and only then hit-tests, so a button that
+        // is clear at the current scroll position can still be covered (sticky header/footer)
+        // at the position where the click actually happens. Scrolling is read-only; re-probe.
+        await tokenSelector.scrollIntoViewIfNeeded({ timeout: 3000 }).catch((e: any) => { out.scrollError = e.message; });
+        out.afterScroll = JSON.parse(await page.evaluate(PROBE_TRADE_FORM) as string);
+
+        res.json({ ...out, durationMs: Date.now() - start });
+    } catch (error: any) {
+        res.status(500).json({ error: error.message, partial: out, durationMs: Date.now() - start });
+    }
+});
+
 // Read version from package.json so there is a single source of truth.
 let VERSION = "unknown";
 try {
