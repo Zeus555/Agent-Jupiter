@@ -169,6 +169,19 @@ const getCurrentMarket = (url: string): string | null => {
 };
 
 /**
+ * The markets this agent can actually read, and the single source of truth for it.
+ *
+ * This matters more than it looks: jup.ag leaves an unknown symbol in the URL while rendering
+ * the DEFAULT market, so getCurrentMarket() agrees the page is on "NOEXISTE" and the reader
+ * happily returns SOL's price for it. Anything not on this list must be refused before it
+ * reaches the browser.
+ */
+export const SUPPORTED_ASSETS = ['WBTC', 'SOL', 'ETH'] as const;
+
+export const isSupportedAsset = (asset: string): boolean =>
+    (SUPPORTED_ASSETS as readonly string[]).includes(String(asset).toUpperCase().trim());
+
+/**
  * Sanity-checks that a price string is in the plausible range for an asset. Used to
  * reject garbage/loading values and (as a secondary guard) a grossly wrong market.
  */
@@ -184,7 +197,10 @@ const inRange = (symbol: string, priceStr: string | null): boolean => {
     if (symbol === 'WBTC') return val >= 10000;
     if (symbol === 'ETH') return val >= 100 && val < 10000;
     if (symbol === 'SOL') return val >= 5 && val < 10000;
-    return true;
+    // Fail closed. This used to `return true`, so a symbol with no known range accepted
+    // whatever number the page happened to show -- which for an unknown market is the default
+    // market's price. Better no answer than another asset's price under the wrong name.
+    return false;
 };
 
 /**

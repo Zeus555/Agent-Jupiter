@@ -2,7 +2,7 @@ import express from 'express';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { getPage, closeBrowser, getBrowserContext, setWindowVisibility, getBrowserPid, getCachedPageUrl, resetProfile } from './browser.js';
-import { connectWallet, openPosition, closePosition, getPrice, peekPrice, isPageReady, getTradeEstimation, getBalances, getBalanceMeta, getPriceMeta, getLockMeta, getOpenPositions, getTradeHistory, getTradeHtml, updatePosition, startBalanceUpdates, startPriceWarmer, getWalletName, setMaintenanceMode, isMaintenance } from './jupiter.js';
+import { connectWallet, openPosition, closePosition, getPrice, peekPrice, isSupportedAsset, SUPPORTED_ASSETS, isPageReady, getTradeEstimation, getBalances, getBalanceMeta, getPriceMeta, getLockMeta, getOpenPositions, getTradeHistory, getTradeHtml, updatePosition, startBalanceUpdates, startPriceWarmer, getWalletName, setMaintenanceMode, isMaintenance } from './jupiter.js';
 import { unlockWallet, getWalletAddressFromPhantom, getSavedWalletAddress, importWallet } from './phantom.js';
 import { startVncSession, stopVncSession, isVncActive } from './vnc.js';
 import swaggerUi from 'swagger-ui-express';
@@ -698,8 +698,39 @@ app.post('/trade/update', async (req, res) => {
 app.get('/price', async (req, res) => {
     const start = Date.now();
     try {
-        const rawAsset = (req.query.asset || req.query.token || req.query.symbol || req.query.Asset);
-        const asset = (Array.isArray(rawAsset) ? rawAsset[0] : rawAsset) as string || 'SOL';
+        // Only these spellings name the asset. A misspelled parameter (?a=, ?pair=, ?id=) used
+        // to fall through to the SOL default, so a caller asking for WBTC got SOL's price back
+        // with no error -- a wrong answer wearing the face of a right one. Reject it instead,
+        // but only when NO recognised alias is present: ?asset=WBTC&foo=1 is unambiguous.
+        const ALIASES = ['asset', 'token', 'symbol', 'Asset'];
+        const usedAlias = ALIASES.find(k => req.query[k] !== undefined);
+        const unknownKeys = Object.keys(req.query).filter(k => !ALIASES.includes(k));
+
+        if (!usedAlias && unknownKeys.length > 0) {
+            return res.status(400).json({
+                error: `Unrecognized query parameter(s): ${unknownKeys.join(', ')}. Name the asset with ?asset= (aliases: token, symbol).`,
+                code: 'UNKNOWN_PARAM',
+                supported: SUPPORTED_ASSETS,
+                durationMs: Date.now() - start
+            });
+        }
+
+        // No parameter at all still means SOL, as documented. But an alias that was supplied
+        // and left empty is a caller bug, not a request for the default.
+        const rawValue = usedAlias ? req.query[usedAlias] : 'SOL';
+        const asset = String(Array.isArray(rawValue) ? rawValue[0] : rawValue ?? '').toUpperCase().trim();
+
+        if (!isSupportedAsset(asset)) {
+            return res.status(400).json({
+                error: asset
+                    ? `Unsupported asset "${asset}". jup.ag renders its default market for an unknown symbol, so answering would return a different asset's price under this name.`
+                    : 'No asset given. Name one with ?asset=, or omit the parameter entirely to get SOL.',
+                code: 'UNSUPPORTED_ASSET',
+                supported: SUPPORTED_ASSETS,
+                durationMs: Date.now() - start
+            });
+        }
+
         
         // FAST PATH: answer from the warm cache without resolving a Page. getPage's
         // isPageReady validator takes the page lock and scans the whole document (and can

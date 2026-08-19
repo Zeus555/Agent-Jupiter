@@ -700,7 +700,9 @@ paths:
             enum: [WBTC, SOL, ETH]
             default: SOL
           description: |
-            Asset to price. The aliases `token` and `symbol` are accepted too. Defaults to "SOL".
+            Asset to price. The aliases `token` and `symbol` are accepted too (`Asset` as well).
+            Omit the parameter entirely to get SOL. Any OTHER parameter name (`a`, `pair`, `id`, …)
+            is rejected with 400 rather than quietly falling back to SOL.
           example: "WBTC"
       responses:
         '200':
@@ -732,6 +734,40 @@ paths:
                   durationMs:
                     type: integer
                     description: Server-side time for this request. 0 on a cache hit.
+                    example: 0
+        '400':
+          description: |
+            The request did not name a supported asset, so it was refused instead of answered.
+            Two cases, told apart by `code`:
+
+            `UNSUPPORTED_ASSET` — the asset is not one of `WBTC`, `SOL`, `ETH` (or an alias was
+            supplied empty). This is refused rather than attempted because jup.ag leaves an unknown
+            symbol in the URL while rendering its default market, so the agent would otherwise read
+            SOL's price and return it under the name you asked for.
+
+            `UNKNOWN_PARAM` — no recognised parameter was given but others were, e.g.
+            `/price?a=WBTC`. That used to fall through to the SOL default and hand back SOL's price
+            for what the caller believed was WBTC. Supplying extra parameters alongside a valid one
+            (`?asset=WBTC&foo=1`) is fine.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Unsupported asset \"NOEXISTE\". jup.ag renders its default market for an unknown symbol, so answering would return a different asset's price under this name."
+                  code:
+                    type: string
+                    enum: [UNSUPPORTED_ASSET, UNKNOWN_PARAM]
+                    example: "UNSUPPORTED_ASSET"
+                  supported:
+                    type: array
+                    items:
+                      type: string
+                    example: ["WBTC", "SOL", "ETH"]
+                  durationMs:
+                    type: integer
                     example: 0
         '500':
           description: |
