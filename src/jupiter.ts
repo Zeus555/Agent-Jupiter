@@ -203,8 +203,11 @@ const inRange = (symbol: string, priceStr: string | null): boolean => {
 const readMarkPrice = async (page: Page): Promise<string | null> => {
     const found = await page.evaluate(`
         (function() {
-            // The WHOLE string must be a number. parseFloat() alone reads "24H Change\n5.88%"
-            // as 24, which is how a 24h-change widget got cached and served as a SOL price.
+            // NOTE: this whole block is a template literal handed to page.evaluate, so a
+            // backslash escape here is consumed before the browser sees it. Never write an
+            // escape sequence in this string -- not even inside a comment: an escaped newline
+            // becomes a real line break, splits the comment, and turns the remainder into
+            // invalid code that fails to parse. Use \\ to pass one through (see /^([\\d,.]+)/).
             const num = (p) => {
                 if (!p) return null;
                 // Take the FIRST line only, then require that line to be entirely numeric.
@@ -281,8 +284,14 @@ const refreshPrice = async (page: Page, symbol: string, budgetMs: number): Promi
     while (Date.now() < deadline) {
         // Only trust a reading once the URL confirms the page settled on this market.
         if (getCurrentMarket(page.url()) === symbol) {
-            // A read can throw if a navigation lands mid-evaluate; that is a retry, not a failure.
-            const price = await readMarkPrice(page).catch(() => null);
+            // A read can throw if a navigation lands mid-evaluate; that is a retry, not a
+            // failure. Say so anyway: swallowing it silently hid a syntax error in the
+            // evaluate script, which made every read return null and looked exactly like
+            // "the page has no price yet" for hours.
+            const price = await readMarkPrice(page).catch((e: any) => {
+                logger.warn(`[refreshPrice] readMarkPrice threw for ${symbol}: ${e?.message}`);
+                return null;
+            });
             if (inRange(symbol, price)) {
                 priceCache[symbol] = { price: price as string, timestamp: Date.now() };
                 reportSuccess();
