@@ -274,6 +274,33 @@ const readMarkPrice = async (page: Page): Promise<string | null> => {
 };
 
 /**
+ * Removes the TradingView chart from the page.
+ *
+ * The chart is an iframe running the charting library, repainting live for nobody: this agent
+ * never reads it. Both sources it does read -- document.title and the "Mark Price" element --
+ * keep updating with the chart gone; that was verified by removing the iframe on a live
+ * jup.ag page and watching the title produce 4 distinct prices over the next 12 seconds.
+ *
+ * Removing the node (rather than blocking its script) is the safe half of this: the chunk is
+ * a same-origin lazy import with a content hash in its name, so aborting it by URL would break
+ * on every Jupiter deploy and could reject the import and fail the whole route.
+ *
+ * The chart comes back on reload/navigation, so this runs after each navigation and on every
+ * warmer tick. Set BLOCK_CHART=false to disable.
+ */
+const hideChart = async (page: Page): Promise<void> => {
+    if (process.env.BLOCK_CHART === 'false') return;
+    const quitados = await page.evaluate(`
+        (function() {
+            var frames = document.querySelectorAll('iframe[id^="tradingview"], iframe[src^="blob:"]');
+            for (var i = 0; i < frames.length; i++) { frames[i].remove(); }
+            return frames.length;
+        })()
+    `).catch(() => 0);
+    if (Number(quitados) > 0) logger.info(`[hideChart] Removed ${quitados} chart iframe(s).`);
+};
+
+/**
  * Navigates to the asset's market if needed and polls the DOM until a valid
  * price is read, updating the cache. Does NOT acquire the page lock — the caller
  * must hold it. Returns the price string, or null if it couldn't be read.
@@ -284,6 +311,7 @@ const refreshPrice = async (page: Page, symbol: string, budgetMs: number): Promi
     // someone restarts the container. Clearing it here lets the warmer self-heal: once a
     // tracked asset goes stale past PRICE_WARM_STALE it lands in this function and recovers.
     await dismissOverlays(page);
+    await hideChart(page);
     if (getCurrentMarket(page.url()) !== symbol) {
         if (isTradeInProgress) {
             // Don't yank the page to another market mid-trade.
@@ -292,6 +320,7 @@ const refreshPrice = async (page: Page, symbol: string, budgetMs: number): Promi
         const targetUrl = `https://jup.ag/perps/short/SOL-${symbol}`;
         logger.info(`[refreshPrice] Navigating -> ${symbol} (${targetUrl})`);
         await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+        await hideChart(page);
     }
 
     // Poll until the deadline. Keep polling while the URL has not settled yet: right after a
@@ -347,6 +376,7 @@ export const startPriceWarmer = (page: Page) => {
                     // The URL tells us which market is displayed; read its Mark Price directly.
                     const current = getCurrentMarket(page.url());
                     if (current) {
+                        await hideChart(page);
                         const price = await readMarkPrice(page).catch(() => null);
                         if (inRange(current, price)) priceCache[current] = { price: price as string, timestamp: Date.now() };
                     }

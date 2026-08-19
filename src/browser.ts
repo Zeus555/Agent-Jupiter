@@ -135,6 +135,31 @@ export const initBrowser = async () => {
             }
             if (!context) throw lastErr || new Error('launchPersistentContext failed after retries');
 
+            // Drop decorative payloads on jup.ag. The agent reads the price from document.title
+            // and the "Mark Price" element, so images, fonts and media buy it nothing while the
+            // host pays to decode and paint them (idle CPU measured at ~124% of one core).
+            //
+            // Deliberately NOT the app's own scripts. The chart is a lazily imported same-origin
+            // chunk with a content hash in its filename (AdvancedTradingView-<hash>.js): blocking
+            // it by URL breaks on every Jupiter deploy, and aborting a dynamic import() rejects
+            // the promise, which in a React tree can take down the whole route rather than just
+            // the chart. Images/fonts/media can never do that. The chart is dealt with in the DOM
+            // instead (see hideChart in jupiter.ts).
+            //
+            // Scoped to jup.ag so the Phantom extension's own pages are untouched during the
+            // wallet flows. Set BLOCK_HEAVY_ASSETS=false to turn this off.
+            if (process.env.BLOCK_HEAVY_ASSETS !== 'false') {
+                const BLOQUEADOS = new Set(['image', 'media', 'font']);
+                await context.route('**/*', (route) => {
+                    const req = route.request();
+                    if (req.url().includes('jup.ag') && BLOQUEADOS.has(req.resourceType())) {
+                        return route.abort().catch(() => {});
+                    }
+                    return route.continue().catch(() => {});
+                });
+                logger.info('[initBrowser] Blocking image/media/font requests on jup.ag.');
+            }
+
 
             if (context) {
                 context.on('close', () => {
