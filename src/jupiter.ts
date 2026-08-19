@@ -177,7 +177,7 @@ const inRange = (symbol: string, priceStr: string | null): boolean => {
     // Whole-string match, for the same reason as readMarkPrice's num(): parseFloat() would
     // accept "24H Change 5.88%" as 24 and wave a label through as a tradeable price. This is
     // the last gate before the value lands in priceCache and goes out over the API.
-    const clean = String(priceStr).trim().replace(/[$,\s]/g, '');
+    const clean = (String(priceStr).trim().split('\n')[0] ?? '').replace(/[$,\s]/g, '');
     if (!/^\d+(\.\d+)?$/.test(clean)) return false;
     const val = parseFloat(clean);
     if (isNaN(val) || val <= 0) return false;
@@ -207,11 +207,17 @@ const readMarkPrice = async (page: Page): Promise<string | null> => {
             // as 24, which is how a 24h-change widget got cached and served as a SOL price.
             const num = (p) => {
                 if (!p) return null;
-                const raw = String(p).trim();
-                const clean = raw.replace(/[$,\\s]/g, '');
+                // Take the FIRST line only, then require that line to be entirely numeric.
+                // The element holding the mark price usually stacks extra lines
+                // ("$81.49" then "+2.31%"), so validating the whole blob rejects a perfectly
+                // good price -- while parseFloat on the whole blob does the opposite and lets
+                // a label through ("24H Change 5.88%" reads as 24). Only the first line can be
+                // the value; scanning later lines would happily accept a volume figure.
+                const first = String(p).trim().split('\\n')[0].trim();
+                const clean = first.replace(/[$,\\s]/g, '');
                 if (!/^\\d+(\\.\\d+)?$/.test(clean)) return null;
                 const val = parseFloat(clean);
-                return (isNaN(val) || val <= 0) ? null : raw;
+                return (isNaN(val) || val <= 0) ? null : first;
             };
 
             // Strategy A: page title leading number — e.g. "169.42 | SOL-PERP | Jupiter".

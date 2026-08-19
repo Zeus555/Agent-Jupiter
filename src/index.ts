@@ -866,6 +866,41 @@ app.get('/debug/dialog', requireDebug, async (req, res) => {
     }
 });
 
+// Read-only view of every source readMarkPrice reads, for diagnosing "Could not read a valid
+// price" without clicking anything. Deliberately skips the isPageReady validator so it does
+// not take the page lock or trigger a reload while the page is being investigated.
+app.get('/debug/price-sources', requireDebug, async (req, res) => {
+    const start = Date.now();
+    try {
+        const page = await getPage('https://jup.ag/perps');
+        const data = await page.evaluate(`
+            (function() {
+                const out = { url: location.href, title: document.title, markPrice: [], fontMono: [] };
+                const els = Array.from(document.querySelectorAll('span, div'));
+                const label = els.find(function(e) { return e.innerText && e.innerText.trim() === 'Mark Price'; });
+                if (!label) {
+                    out.markPrice.push({ where: 'label', text: 'NO "Mark Price" LABEL IN DOM' });
+                } else {
+                    out.markPrice.push({ where: 'nextElementSibling', text: label.nextElementSibling ? label.nextElementSibling.innerText : null });
+                    if (label.parentElement) {
+                        out.markPrice.push({ where: 'parent.innerText', text: label.parentElement.innerText });
+                        const c1 = label.parentElement.children[1];
+                        out.markPrice.push({ where: 'parent.children[1]', text: c1 ? c1.innerText : null });
+                    }
+                }
+                out.fontMono = Array.from(document.querySelectorAll('.font-mono')).slice(0, 12).map(function(el) {
+                    return { text: (el.innerText || '').slice(0, 60), fontSize: window.getComputedStyle(el).fontSize };
+                });
+                out.bodyPreview = (document.body.innerText || '').slice(0, 500);
+                return JSON.stringify(out);
+            })()
+        `);
+        res.json({ ...JSON.parse(data as string), durationMs: Date.now() - start });
+    } catch (error: any) {
+        res.status(500).json({ error: error.message, durationMs: Date.now() - start });
+    }
+});
+
 // Read version from package.json so there is a single source of truth.
 let VERSION = "unknown";
 try {
