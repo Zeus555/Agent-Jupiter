@@ -1,4 +1,4 @@
-import type { Page } from 'playwright';
+import type { Locator, Page } from 'playwright';
 import { getPage, closeBrowser, cleanupTabs } from './browser.js';
 import dotenv from 'dotenv';
 import { approveConnection, directUnlock } from './phantom.js';
@@ -31,12 +31,82 @@ export const getLockMeta = (): { locked: boolean; waiting: number } => ({
 });
 
 /**
+ * Reports what is sitting on top of `target`'s click point, or null when the target is
+ * reachable. This is exactly the condition Playwright's actionability check waits on, so it
+ * cannot disagree with click(): a click only lands if the topmost element at the centre is
+ * the target itself or something inside it.
+ *
+ * Worth having because "locator.click: Timeout 5000ms exceeded" on a button that isVisible()
+ * says nothing about the cause, and the cause is almost always an overlay.
+ */
+const describeBlocker = async (target: Locator): Promise<string | null> =>
+    target.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) return 'a zero-sized element';
+        const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        if (!top || top === el || el.contains(top)) return null;
+        const cls = typeof top.className === 'string' ? top.className.split(' ').slice(0, 4).join('.') : '';
+        return '<' + top.tagName.toLowerCase() + (cls ? '.' + cls : '') + '>';
+    }).catch(() => null);
+
+// Title of the one modal on this page that Escape cannot close. Matching on it keeps the
+// acknowledgement below narrow: this must never become "press the primary button on whatever
+// dialog is open", because the same page raises transaction-confirmation dialogs too.
+const TERMS_DIALOG_TITLE = 'Acknowledge Terms and Conditions';
+
+/**
+ * Answers Jupiter's "Acknowledge Terms and Conditions" gate: an alertdialog whose backdrop
+ * (fixed inset-0 z-50, data-slot="alert-dialog-overlay") intercepts every pointer event on the
+ * trade form, so balances cannot be read and nothing can be clicked until it is answered.
+ * Escape is ignored by design — a consent gate wants an explicit answer.
+ *
+ * Ticks "Do not show again" first so the acknowledgement persists in the browser profile
+ * (./user_data, a volume), instead of having to be re-answered after every reload.
+ *
+ * Returns true when it clicked Accept.
+ */
+const acknowledgeTermsDialog = async (page: Page): Promise<boolean> => {
+    const dialog = page.locator('[data-slot="alert-dialog-content"]').filter({ hasText: TERMS_DIALOG_TITLE }).first();
+    if (!(await dialog.isVisible().catch(() => false))) return false;
+
+    // Base UI renders the checkbox as <span role="checkbox" aria-checked> over a hidden input,
+    // so aria-checked is the state to read and the span is the thing to click.
+    const dontShowAgain = dialog.locator('[role="checkbox"]').first();
+    if ((await dontShowAgain.getAttribute('aria-checked').catch(() => null)) !== 'true') {
+        await dontShowAgain.click({ timeout: 2000 }).catch(() => {});
+    }
+    const suppressed = (await dontShowAgain.getAttribute('aria-checked').catch(() => null)) === 'true';
+    if (!suppressed) {
+        logger.warn('[acknowledgeTerms] Could not tick "Do not show again"; the dialog will be back after the next reload.');
+    }
+
+    await dialog.getByRole('button', { name: 'Accept and Continue' }).click({ timeout: 5000 });
+    logger.info(`[acknowledgeTerms] Accepted Jupiter's terms dialog${suppressed ? ' and suppressed future prompts' : ''}.`);
+
+    // The backdrop unmounts on an exit transition; let it finish before the caller re-tests.
+    await dialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+    return true;
+};
+
+/**
  * Closes any modal left open on the Jupiter page. A full-screen overlay
  * ([data-slot="alert-dialog-overlay"], fixed inset-0 z-50) swallows pointer events, so every
  * later click retries until it times out — all of it under the page lock. Best effort, cheap,
  * and safe to call before any interaction.
+ *
+ * Pass the element you are about to click as `target` whenever you have one. The centre-of-
+ * viewport probe below cannot see Jupiter's "Acknowledge Terms and Conditions" dialog: the
+ * viewport centre lands inside the dialog PANEL, which is a sibling of the backdrop and
+ * carries neither role="dialog" nor a data-slot, so closest() matches nothing and the probe
+ * reports a clear page — while the backdrop (fixed inset-0 z-50, pointer-events auto) covers
+ * the trade form and silently eats every click. Hit-testing the actual target instead is
+ * markup-independent and cannot be fooled that way.
+ *
+ * Callers that only READ the DOM (refreshPrice) keep the cheap centre probe: an overlay that
+ * merely covers the page does not stop a read, and the target-less path is deliberately
+ * unchanged so the price path behaves exactly as before.
  */
-const dismissOverlays = async (page: Page): Promise<void> => {
+const dismissOverlays = async (page: Page, target?: Locator): Promise<void> => {
     // Ask what is actually on top at the centre of the viewport. A merely mounted dialog node
     // is harmless; only one that covers the page intercepts clicks and hides the price.
     const overlayOpen = (): Promise<boolean> => page.evaluate(`
@@ -47,14 +117,19 @@ const dismissOverlays = async (page: Page): Promise<void> => {
         })()
     `).then(v => !!v).catch(() => false);
 
+    const blocked = target
+        ? async (): Promise<boolean> => (await describeBlocker(target)) !== null
+        : overlayOpen;
+
     for (let i = 0; i < 3; i++) {
-        if (!(await overlayOpen())) return;
+        if (!(await blocked())) return;
         logger.info('[dismissOverlays] Modal overlay detected; sending Escape.');
         await page.keyboard.press('Escape').catch(() => {});
         await page.waitForTimeout(250);
     }
-    if (await overlayOpen()) {
-        logger.warn('[dismissOverlays] Overlay still open after 3 attempts; clicks may be blocked.');
+    const remaining = target ? await describeBlocker(target) : (await overlayOpen() ? 'an overlay' : null);
+    if (remaining) {
+        logger.warn(`[dismissOverlays] Still blocked by ${remaining} after 3 attempts; clicks will time out.`);
     }
 };
 
@@ -484,10 +559,6 @@ const fetchBalancesFromUI = async (page: Page, tokens: string[]): Promise<Record
             return {};
         }
 
-        // Clear any stuck modal before interacting: its overlay intercepts pointer events and
-        // would otherwise burn the full click timeout on every retry, under the page lock.
-        await dismissOverlays(page);
-
         const amountInput = page.getByPlaceholder('0.00').filter({ hasNotText: 'x' }).first();
         const tokenSelector = amountInput.locator('xpath=../..').locator('button').first();
 
@@ -496,7 +567,39 @@ const fetchBalancesFromUI = async (page: Page, tokens: string[]): Promise<Record
             return {};
         }
 
-        await tokenSelector.click({ timeout: BALANCE_CLICK_TIMEOUT_MS });
+        // Clear any stuck modal before interacting: its overlay intercepts pointer events and
+        // would otherwise burn the full click timeout on every retry, under the page lock.
+        // The selector has to be resolved first so the check can hit-test the real button --
+        // visible-but-unreachable is exactly the state this scraper kept dying in.
+        await dismissOverlays(page, tokenSelector);
+
+        // Escape does not clear a consent gate, so if something is still covering the button,
+        // try the one dialog that behaves that way. Kept here at the call site rather than
+        // inside dismissOverlays: accepting terms is a decision, not overlay housekeeping, and
+        // it should be visible to anyone reading this path.
+        let blocker = await describeBlocker(tokenSelector);
+        if (blocker && await acknowledgeTermsDialog(page).catch(() => false)) {
+            blocker = await describeBlocker(tokenSelector);
+        }
+
+        // Still covered? Clicking can only burn the full timeout — five seconds of the page
+        // lock that every /price caller then queues behind, once per balance cycle, to reach
+        // the same conclusion this check reaches in a millisecond.
+        if (blocker) {
+            logger.warn(`[fetchBalancesFromUI] Token selector is covered by ${blocker} and neither Escape nor the terms dialog handler cleared it; skipping the click. Some modal is holding the trade form and needs an answer in the UI.`);
+            return {};
+        }
+
+        try {
+            await tokenSelector.click({ timeout: BALANCE_CLICK_TIMEOUT_MS });
+        } catch (e: any) {
+            // Name whatever intercepted the click, at the FRONT: Playwright's message carries a
+            // long call log, so a suffix ends up far below the first line of the log entry. A
+            // bare timeout on a visible, enabled button sends the next reader hunting for the
+            // wrong bug (a stale locator) when the cause is almost always an overlay.
+            const late = await describeBlocker(tokenSelector);
+            throw new Error(late ? `click point covered by ${late} — ${e.message}` : e.message);
+        }
         
         // Dynamic wait: Wait until the dialog is visible and contains at least one row with a numeric balance
         let results: Record<string, string> = {};
