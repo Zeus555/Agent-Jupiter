@@ -37,13 +37,13 @@ export const getLockMeta = (): { locked: boolean; waiting: number } => ({
  * and safe to call before any interaction.
  */
 const dismissOverlays = async (page: Page): Promise<void> => {
+    // Ask what is actually on top at the centre of the viewport. A merely mounted dialog node
+    // is harmless; only one that covers the page intercepts clicks and hides the price.
     const overlayOpen = (): Promise<boolean> => page.evaluate(`
         (function() {
-            const sel = '[data-slot="alert-dialog-overlay"], [data-slot="dialog-overlay"], div[role="dialog"]';
-            return Array.from(document.querySelectorAll(sel)).some(function(e) {
-                const r = e.getBoundingClientRect();
-                return r.width > 0 && r.height > 0;
-            });
+            const sel = '[data-slot="alert-dialog-overlay"], [data-slot="dialog-overlay"], [role="dialog"]';
+            const el = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+            return !!(el && el.closest(sel));
         })()
     `).then(v => !!v).catch(() => false);
 
@@ -208,8 +208,8 @@ const readMarkPrice = async (page: Page): Promise<string | null> => {
             const num = (p) => {
                 if (!p) return null;
                 const raw = String(p).trim();
-                const clean = raw.replace(/[$,\s]/g, '');
-                if (!/^\d+(\.\d+)?$/.test(clean)) return null;
+                const clean = raw.replace(/[$,\\s]/g, '');
+                if (!/^\\d+(\\.\\d+)?$/.test(clean)) return null;
                 const val = parseFloat(clean);
                 return (isNaN(val) || val <= 0) ? null : raw;
             };
