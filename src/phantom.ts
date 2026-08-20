@@ -1,7 +1,7 @@
 import type { Page, BrowserContext } from 'playwright';
 import dotenv from 'dotenv';
 import path from 'path';
-import { cleanupTabs } from './browser.js';
+import { cleanupTabs, getPhantomPage, bringTradingPageToFront } from './browser.js';
 import { logger } from './logger.js';
 import fs from 'fs';
 
@@ -451,36 +451,34 @@ export const approveConnection = async (context: BrowserContext): Promise<boolea
              await popup.close().catch(() => {});
         }
         return false;
+    } finally {
+        // This is the one place that raises a wallet window (popup.bringToFront above), so it
+        // is the one place that has to hand the front back: a hidden jup.ag gets throttled by
+        // Chromium, and the price cache is fed from whatever that page renders.
+        await bringTradingPageToFront();
     }
 };
 
 export const directUnlock = async (context: BrowserContext) => {
-    const extId = process.env.PHANTOM_EXTENSION_ID || 'bfnaelmomeimhlpmgjnjophhpkkoljpa';
-    const popupUrl = `chrome-extension://${extId}/popup.html`;
-
-    logger.info(`Checking extension state at ${popupUrl}...`);
-
-    // 1. Try to reuse a blank page, otherwise create new
-    const pages = context.pages();
-    let page = pages.find(p => p.url() === 'about:blank');
-    const isNewPage = !page;
-
-    if (isNewPage) {
-        page = await context.newPage();
-    }
+    // The Phantom tab is persistent now (see getPhantomPage): this neither opens nor closes
+    // one, it just borrows the tab that is already parked on the extension. refresh:true
+    // re-navigates to popup.html so the lock state read below is current -- Phantom can
+    // auto-lock while idle, and a long-open popup view would report the state it had when it
+    // was first painted.
+    const page = await getPhantomPage(context, { refresh: true });
+    logger.info('Checking extension state on the persistent Phantom tab...');
 
     try {
-        await page!.goto(popupUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
-        await page!.waitForTimeout(2000);
+        await page.waitForTimeout(2000);
 
         // Check for password input
-        const passwordInput = page!.locator('input[type="password"]');
+        const passwordInput = page.locator('input[type="password"]');
         if (await passwordInput.isVisible({ timeout: 5000 }).catch(() => false)) {
             logger.info('Phantom is locked. Unlocking via direct popup...');
             const password = getPhantomPassword();
             await passwordInput.fill(password);
-            await page!.getByRole('button', { name: /Unlock/i }).click();
-            await page!.waitForTimeout(3000);
+            await page.getByRole('button', { name: /Unlock/i }).click();
+            await page.waitForTimeout(3000);
             logger.info('Direct unlock attempt finished.');
         } else {
             logger.info('Phantom seems already unlocked or at main screen.');
@@ -488,22 +486,17 @@ export const directUnlock = async (context: BrowserContext) => {
     } catch (e: any) {
         logger.warn('Direct unlock failed or timed out:', e.message);
     } finally {
-        if (isNewPage && page) {
-            await page.close().catch(() => { });
-        } else if (page) {
-            await page.goto('about:blank').catch(() => { });
-        }
-        // Sweep redundant tabs
+        // Sweep stray tabs. The Phantom tab is exempt, so it survives and stays available for
+        // the next unlock instead of being reopened.
         await cleanupTabs(context);
     }
 };
 
 export const getWalletAddressFromPhantom = async (context: BrowserContext): Promise<string> => {
-    const extId = process.env.PHANTOM_EXTENSION_ID || 'bfnaelmomeimhlpmgjnjophhpkkoljpa';
-    const popupUrl = `chrome-extension://${extId}/popup.html`;
-    const page = await context.newPage();
+    // Borrows the persistent Phantom tab rather than opening a throwaway one; refresh:true
+    // gives window.solana a freshly loaded popup to expose the connected key on.
+    const page = await getPhantomPage(context, { refresh: true });
     try {
-        await page.goto(popupUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
         await page.waitForTimeout(2500);
         
         // 1. Check if locked
@@ -536,8 +529,6 @@ export const getWalletAddressFromPhantom = async (context: BrowserContext): Prom
     } catch (e: any) {
         logger.warn('[Phantom] Failed to fetch address from popup:', e.message);
         return "Unknown";
-    } finally {
-        await page.close().catch(() => {});
     }
 };
 

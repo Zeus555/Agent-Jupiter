@@ -1099,6 +1099,30 @@ app.get('/debug/balance-dom', requireDebug, async (req, res) => {
     }
 });
 
+// Read-only list of the tabs the agent is holding. The Phantom extension tab is kept open for
+// the life of the browser now, so "how many tabs are there and what is on them" is the thing
+// to check when the wallet path misbehaves -- and the thing to watch for tab leaks, since a
+// tab that escapes cleanupTabs costs a renderer process on a host with little memory to spare.
+app.get('/debug/tabs', requireDebug, async (req, res) => {
+    const start = Date.now();
+    try {
+        const page = await getPage('https://jup.ag/perps');
+        const pages = page.context().pages();
+        const tabs = pages.map((p, idx) => ({
+            idx,
+            url: p.url().slice(0, 140),
+            closed: p.isClosed(),
+            kind: p.url().includes('notification.html') ? 'phantom-approval-popup'
+                : p.url().includes('chrome-extension') ? 'phantom'
+                : p.url().includes('jup.ag') ? 'trading'
+                : 'other'
+        }));
+        res.json({ tabCount: pages.length, tabs, durationMs: Date.now() - start });
+    } catch (error: any) {
+        res.status(500).json({ error: error.message, durationMs: Date.now() - start });
+    }
+});
+
 // Read version from package.json so there is a single source of truth.
 let VERSION = "unknown";
 try {

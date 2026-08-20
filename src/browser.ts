@@ -24,6 +24,93 @@ const pageCache = new Map<string, Page>();
 const navigationPromises = new Map<string, Promise<Page>>();
 
 /**
+ * The Phantom extension tab. Opened once and kept for the life of the browser.
+ *
+ * It used to be opened, used and closed on every unlock, so each unlock paid a
+ * context.newPage() -- the one operation this codebase already documents as flaky here
+ * ("Failed to open a new tab", which is why importWallet retries it six times). Parking a
+ * single tab on popup.html removes that cost from the wallet path entirely.
+ *
+ * It lives in the BACKGROUND on purpose. A second background tab does not throttle the
+ * foreground one, but leaving Phantom in front would leave jup.ag hidden -- and every price
+ * this agent serves is read off that page. Nothing here calls bringToFront; a caller that
+ * genuinely needs the Phantom UI in front must put the trading page back afterwards with
+ * bringTradingPageToFront().
+ */
+let phantomPage: Page | null = null;
+
+const phantomExtId = (): string => process.env.PHANTOM_EXTENSION_ID || 'bfnaelmomeimhlpmgjnjophhpkkoljpa';
+
+/**
+ * Opens a tab, retrying: newPage() is unreliable in this container and fails with
+ * "Failed to open a new tab" under load (importWallet has carried its own retry for this
+ * reason for a while). It matters more now than it used to -- the agent holds a Phantom tab
+ * and a trading tab, so startup has to succeed at opening a second one, where it previously
+ * got away with reusing the single tab Chromium starts with.
+ */
+const openTabWithRetry = async (ctx: BrowserContext, who: string): Promise<Page> => {
+    let lastError = 'unknown';
+    for (let i = 0; i < 6; i++) {
+        try { return await ctx.newPage(); }
+        catch (e: any) {
+            lastError = e.message;
+            logger.warn(`[${who}] newPage attempt ${i + 1}/6 failed: ${e.message}`);
+            await new Promise(r => setTimeout(r, 2500));
+        }
+    }
+    throw new Error(`${who}: could not open a tab after 6 attempts (${lastError}).`);
+};
+
+/**
+ * Returns the persistent Phantom tab, opening it the first time. Pass { refresh: true } to
+ * re-navigate to popup.html so the extension's lock state is read fresh rather than from a
+ * view that has been sitting open (Phantom can auto-lock while idle, and its MV3 popup is
+ * known to paint blank under automation).
+ */
+export const getPhantomPage = async (ctx: BrowserContext, opts?: { refresh?: boolean }): Promise<Page> => {
+    const popupUrl = `chrome-extension://${phantomExtId()}/popup.html`;
+    const onExtension = (p: Page) => p.url().startsWith(`chrome-extension://${phantomExtId()}/`);
+
+    if (phantomPage && !phantomPage.isClosed()) {
+        if (opts?.refresh || !onExtension(phantomPage)) {
+            await phantomPage.goto(popupUrl, { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+        }
+        return phantomPage;
+    }
+
+    // Adopt an extension tab that is already open before making another one, since newPage()
+    // is the flaky part. notification.html is excluded deliberately: that is the approval
+    // popup Phantom opens and closes for a single transaction, not a tab we may hold.
+    let page: Page | null = ctx.pages().find(p =>
+        !p.isClosed() && onExtension(p) && !p.url().includes('notification.html')) || null;
+
+    if (!page) page = await openTabWithRetry(ctx, 'getPhantomPage');
+
+    // Register BEFORE navigating: a concurrent cleanupTabs would otherwise find it sitting on
+    // about:blank, not recognise it, and close it out from under this call.
+    phantomPage = page;
+    if (opts?.refresh || !onExtension(page)) {
+        await page.goto(popupUrl, { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+    }
+    logger.info('[getPhantomPage] Phantom tab ready; keeping it open in the background.');
+    return phantomPage;
+};
+
+/**
+ * Puts the trading page back in front. Call after anything that had to raise a wallet window:
+ * jup.ag must be the visible tab, because a hidden one gets its timers throttled by Chromium
+ * and the price cache is fed from what that page renders.
+ */
+export const bringTradingPageToFront = async (): Promise<void> => {
+    for (const p of pageCache.values()) {
+        if (!p.isClosed()) {
+            await p.bringToFront().catch(() => {});
+            return;
+        }
+    }
+};
+
+/**
  * Native Windows Window Management
  * nCmdShow: 0 = Hide, 5 = Show
  */
@@ -165,6 +252,7 @@ export const initBrowser = async () => {
                 context.on('close', () => {
                     context = null;
                     launchPromise = null;
+                    phantomPage = null;
                     pageCache.clear();
                     navigationPromises.clear();
                 });
@@ -201,10 +289,13 @@ export const cleanupTabs = async (ctx: BrowserContext) => {
     if (!ctx) return;
     try {
         const pages = ctx.pages();
-        const cachedPages = Array.from(pageCache.values());
+        // The Phantom tab is held deliberately now, so it is protected here alongside the
+        // trading pages -- without this, getPage() would close it on its very next call.
+        const keep = [...pageCache.values(), phantomPage].filter(Boolean) as Page[];
         for (const p of pages) {
             const url = p.url();
-            if (url === 'about:blank' || (url.includes('chrome-extension') && !cachedPages.includes(p))) {
+            if (keep.includes(p)) continue;
+            if (url === 'about:blank' || url.includes('chrome-extension')) {
                 if (!p.isClosed() && pages.length > 1) await p.close().catch(() => {});
             }
         }
@@ -278,8 +369,8 @@ export const getPage = async (url: string, validator?: (page: Page) => Promise<b
                 const pages = ctx.pages();
                 page = pages.find(p => p.url().includes(url));
                 if (!page) {
-                    const blank = pages.find(p => p.url() === 'about:blank');
-                    page = blank || await ctx.newPage();
+                    const blank = pages.find(p => p.url() === 'about:blank' && p !== phantomPage);
+                    page = blank || await openTabWithRetry(ctx, 'getPage');
                 }
                 pageCache.set(url, page);
             }
@@ -317,6 +408,7 @@ export const closeBrowser = async () => {
     }
     context = null;
     launchPromise = null;
+    phantomPage = null;
     pageCache.clear();
     navigationPromises.clear();
 };
