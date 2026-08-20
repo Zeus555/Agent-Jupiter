@@ -99,7 +99,25 @@ export const initBrowser = async () => {
             // tabs ("profile appears to be in use by another Chromium process").
             clearProfileLocks(userDataDir);
 
-            logger.force(`Initializing browser (Mode: HEADFUL + OS TOGGLE)`);
+            // BROWSER_HEADLESS: opt-in NEW headless mode. The old headless could not load
+            // extensions (hence this file's historical headful requirement); new headless
+            // (Chromium >= 132; this image ships chromium-1208) supports them. Playwright detail
+            // that makes or breaks this: bare headless:true selects the "headless shell" binary,
+            // which does NOT load extensions -- the full browser must be forced.
+            //   'new'      channel 'chromium' + headless:true (Playwright's documented route to
+            //              new headless on the full binary -- the same one running today).
+            //   'new-arg'  contingency: keep the headful launch path but pass --headless=new on
+            //              the command line, bypassing Playwright's binary selection.
+            //   unset      current behaviour, headful under Xvfb. Default -> removing the variable
+            //              is a complete rollback with no image rebuild.
+            // Known loss while headless: the noVNC onboarding session (vnc.ts) serves an EMPTY
+            // display, because nothing is composited to Xvfb. To onboard a wallet: unset this,
+            // recreate the container, onboard visually, then re-enable.
+            const headlessMode = process.env.BROWSER_HEADLESS === 'new' ? 'new'
+                : process.env.BROWSER_HEADLESS === 'new-arg' ? 'new-arg'
+                : 'headful';
+
+            logger.force(`Initializing browser (mode: ${headlessMode.toUpperCase()}${headlessMode === 'headful' ? ' + OS TOGGLE' : ''})`);
 
             // ALWAYS launch headless: false so extensions and UI work. On the weak/headless
             // host the first launch sometimes crashes ("Target page/browser closed"); retry a
@@ -115,13 +133,15 @@ export const initBrowser = async () => {
                 '--disable-dev-shm-usage',
                 '--window-size=1600,1200'
             ];
+            if (headlessMode === 'new-arg') launchArgs.push('--headless=new');
             context = null;
             let lastErr: any = null;
             for (let attempt = 1; attempt <= 3; attempt++) {
                 try {
                     clearProfileLocks(userDataDir);
                     context = await chromium.launchPersistentContext(userDataDir, {
-                        headless: false,
+                        headless: headlessMode === 'new',
+                        ...(headlessMode === 'new' ? { channel: 'chromium' as const } : {}),
                         args: launchArgs,
                         viewport: { width: 1600, height: 1200 }
                     });
