@@ -198,7 +198,14 @@ const PRICE_POLL_MS = Number(process.env.PRICE_POLL_MS) || 250;
 // cold read at 3.75s — shorter than the page needs to paint a price. Result: whenever the
 // cache was empty, /price polled a page that had not rendered yet and threw FATAL after ~4s.
 // Budgeting in milliseconds means tuning PRICE_POLL_MS can no longer shorten the deadline.
-const PRICE_COLD_TIMEOUT_MS = Number(process.env.PRICE_COLD_TIMEOUT_MS) || 15000;
+//
+// 25s, not 15s. Measured on sentinel016 over three runs of the same protocol, cold reads land
+// between 8.8s and 24.1s: at 15s the tail was cut off, so the first request for an asset after a
+// restart routinely 500'd twice before succeeding, and a 24120 ms read that returned a perfectly
+// good price would have been thrown away. The cost of the higher ceiling is that a genuinely
+// unreadable page takes longer to give up on, which is the better trade -- callers already treat
+// 500 as fatal, and /price answers from cache in ~0ms whenever the warmer is keeping up.
+const PRICE_COLD_TIMEOUT_MS = Number(process.env.PRICE_COLD_TIMEOUT_MS) || 25000;
 // Same budget for the background warmer. Shorter than the cold path because the warmer holds
 // the page lock while it runs and must not stall trades/API calls — but still long enough to
 // survive one navigation, otherwise a newly tracked asset never warms and every request for
