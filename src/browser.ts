@@ -39,6 +39,23 @@ const navigationPromises = new Map<string, Promise<Page>>();
  */
 let phantomPage: Page | null = null;
 
+/**
+ * Raised while a wallet approval is being answered.
+ *
+ * Phantom's approval window is notification.html -- a chrome-extension URL, so cleanupTabs
+ * would close it like any other stray extension tab, and cleanupTabs runs from every
+ * getPage() call: every price read, every balance cycle, every route. A price read closing
+ * the approval window out from under an in-flight trade is the failure this prevents.
+ *
+ * Deliberately a window rather than a blanket exemption. Phantom normally closes this popup
+ * itself, but if one is ever orphaned it must still be swept -- a permanently protected
+ * notification.html would sit there and get adopted as the popup for the NEXT approval.
+ */
+let approvalInFlight = false;
+
+/** Marks an approval as in progress so cleanupTabs leaves Phantom's popup alone. */
+export const setApprovalInFlight = (v: boolean): void => { approvalInFlight = v; };
+
 const phantomExtId = (): string => process.env.PHANTOM_EXTENSION_ID || 'bfnaelmomeimhlpmgjnjophhpkkoljpa';
 
 /**
@@ -295,6 +312,7 @@ export const cleanupTabs = async (ctx: BrowserContext) => {
         for (const p of pages) {
             const url = p.url();
             if (keep.includes(p)) continue;
+            if (approvalInFlight && url.includes('notification.html')) continue;
             if (url === 'about:blank' || url.includes('chrome-extension')) {
                 if (!p.isClosed() && pages.length > 1) await p.close().catch(() => {});
             }

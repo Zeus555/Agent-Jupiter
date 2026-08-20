@@ -1,7 +1,7 @@
 import type { Page, BrowserContext } from 'playwright';
 import dotenv from 'dotenv';
 import path from 'path';
-import { cleanupTabs, getPhantomPage, bringTradingPageToFront } from './browser.js';
+import { cleanupTabs, getPhantomPage, bringTradingPageToFront, setApprovalInFlight } from './browser.js';
 import { logger } from './logger.js';
 import fs from 'fs';
 
@@ -317,6 +317,10 @@ export const unlockWallet = async (context: BrowserContext) => {
 export const approveConnection = async (context: BrowserContext): Promise<boolean> => {
     logger.info('Waiting for native Phantom popup...');
 
+    // Raised before the polling loop, not after it: the wait is exactly when a concurrent
+    // getPage() -> cleanupTabs could close the window being waited on.
+    setApprovalInFlight(true);
+
     let popup: Page | null = null;
     const startTime = Date.now();
     const timeout = 15000;
@@ -331,6 +335,7 @@ export const approveConnection = async (context: BrowserContext): Promise<boolea
 
     if (!popup) {
         logger.warn('Phantom native popup (notification.html) never appeared.');
+        setApprovalInFlight(false);
         return false;
     }
 
@@ -452,6 +457,8 @@ export const approveConnection = async (context: BrowserContext): Promise<boolea
         }
         return false;
     } finally {
+        // Lower the guard so an orphaned popup goes back to being sweepable.
+        setApprovalInFlight(false);
         // This is the one place that raises a wallet window (popup.bringToFront above), so it
         // is the one place that has to hand the front back: a hidden jup.ag gets throttled by
         // Chromium, and the price cache is fed from whatever that page renders.
