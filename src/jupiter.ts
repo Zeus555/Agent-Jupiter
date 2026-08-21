@@ -535,13 +535,16 @@ export const startBalanceUpdates = async (page: Page) => {
 /**
  * Snapshot of the price cache (for /health). Does not touch the browser.
  */
-export const getPriceMeta = (): { warmerRunning: boolean; tracked: string[]; prices: Record<string, { price: string; ageMs: number }> } => {
+export const getPriceMeta = (): { warmerRunning: boolean; tracked: string[]; staleThresholdMs: number; prices: Record<string, { price: string; ageMs: number }> } => {
     const now = Date.now();
     const prices: Record<string, { price: string; ageMs: number }> = {};
     for (const [sym, entry] of Object.entries(priceCache)) {
         prices[sym] = { price: entry.price, ageMs: now - entry.timestamp };
     }
-    return { warmerRunning: priceWarmerStarted, tracked: [...requestedAssets.keys()], prices };
+    // staleThresholdMs is exported so /health judges staleness by the SAME line the serving
+    // path uses (past it, getPrice stops serving cache and does a blocking cold read). A
+    // hardcoded copy in index.ts would silently diverge if PRICE_STALE_MAX is tuned via env.
+    return { warmerRunning: priceWarmerStarted, tracked: [...requestedAssets.keys()], staleThresholdMs: PRICE_STALE_MAX, prices };
 };
 
 /**

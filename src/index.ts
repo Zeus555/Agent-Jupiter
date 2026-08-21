@@ -229,15 +229,31 @@ app.get('/health', async (req, res) => {
         }
     }
 
-    // Healthy if the warmer is running AND every asset someone is actually polling has a
-    // usable price. hasFreshPrice used to be computed and then left out of `ok`, so a cache
-    // frozen for four days still reported status:"ok" and nothing alerted.
-    // Assets nobody has requested are not a fault — there is nothing to keep warm.
+    // Red means "the price machinery is broken", not "a cache entry is old". Two facts, both
+    // measured on this box, force that distinction:
+    //   - A tracked asset's cache exceeding staleThresholdMs is NORMAL under multi-asset
+    //     polling: the warmer rotates one navigation at a time, so with 3 assets each cache
+    //     cycles up to ~80s old — while /price still honours its contract (past the threshold
+    //     it stops serving cache and cold-reads fresh; worst served age observed: 58s, zero
+    //     errors). Gating on staleTracked alone made /health answer 503 for 90% of samples
+    //     while every /price call succeeded — a false alarm that trains people to ignore it.
+    //   - When the page is genuinely dead (the four-day silent outage), ALL ages grow in
+    //     lockstep, because even the warmer's cheapest path — re-reading the market already on
+    //     screen, every ~1s, no navigation — stops producing. freshestAgeMs is that signal:
+    //     healthy machinery keeps it near 0 no matter how starved the rotation is; a dead page
+    //     sends it past the threshold within a minute.
+    // So: degraded = someone's asset is stale AND nothing at all is being refreshed. The first
+    // half keeps an idle box green (nothing tracked -> nothing owed); the second half is what
+    // separates "rotation is behind" from "machinery is dead".
+    // hasFreshPrice stays informational-only (its 15s window is calibrated for single-asset
+    // monitoring; under rotation it dips false while everything is fine).
     const hasFreshPrice = Object.values(priceMeta.prices).some(p => p.ageMs < 15000);
-    const staleTracked = priceMeta.tracked.filter(sym => (priceMeta.prices[sym]?.ageMs ?? Infinity) >= 60000);
+    const ages = Object.values(priceMeta.prices).map(p => p.ageMs);
+    const freshestAgeMs = ages.length ? Math.min(...ages) : Infinity;
+    const staleTracked = priceMeta.tracked.filter(sym => (priceMeta.prices[sym]?.ageMs ?? Infinity) >= priceMeta.staleThresholdMs);
     const lock = getLockMeta();
     const ok = priceMeta.warmerRunning
-        && staleTracked.length === 0
+        && (staleTracked.length === 0 || freshestAgeMs < priceMeta.staleThresholdMs)
         && (req.query.deep !== 'true' || pageReady === true);
 
     res.status(ok ? 200 : 503).json({
@@ -246,7 +262,7 @@ app.get('/health', async (req, res) => {
         uptimeSec: Math.round(process.uptime()),
         pageReady,
         pageUrl: getCachedPageUrl('https://jup.ag/perps'),
-        price: { ...priceMeta, hasFreshPrice, staleTracked },
+        price: { ...priceMeta, hasFreshPrice, freshestAgeMs: Number.isFinite(freshestAgeMs) ? freshestAgeMs : null, staleTracked },
         balance: balanceMeta,
         pageLock: lock,
         durationMs: Date.now() - start

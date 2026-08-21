@@ -163,10 +163,14 @@ paths:
         URL. Does not touch the browser. Add `?deep=true` to also verify the Jupiter page is ready
         (heavier: it takes the page lock).
 
-        Returns **503 / `degraded`** when the warmer is not running, or when any asset currently
-        being polled has no price newer than 60s — `price.staleTracked` names them. Alert on this:
-        an earlier version computed freshness and then left it out of the check, so a cache frozen
-        for four days still reported `ok`.
+        Returns **503 / `degraded`** when the warmer is not running, or when some polled asset's
+        cache is past the serving threshold (`price.staleTracked` names them) AND nothing in the
+        cache is being refreshed at all (`price.freshestAgeMs` past the same threshold). Both
+        conditions are required: under multi-asset polling the warmer rotates markets one at a
+        time, so individual caches aging past the threshold is normal and /price covers it with
+        a blocking cold read — only a freshestAgeMs that keeps growing means the page has stopped
+        producing prices altogether. Alert on 503: an earlier version computed freshness and then
+        left it out of the check, so a cache frozen for four days still reported `ok`.
 
         `pageLock.waiting` is the number of callers queued for the browser page. Sustained
         non-zero values mean something is holding the page and requests are backing up behind it.
@@ -232,9 +236,20 @@ paths:
                         type: boolean
                         description: At least one cached price is under 15s old.
                         example: true
+                      freshestAgeMs:
+                        type: integer
+                        nullable: true
+                        description: >
+                          Age of the most recently refreshed cache entry (null if the cache is
+                          empty). Near 0 whenever the page is producing prices; growing past the
+                          serving threshold means the machinery is dead.
+                        example: 878
                       staleTracked:
                         type: array
-                        description: Tracked assets with no price newer than 60s. Non-empty means degraded.
+                        description: >
+                          Tracked assets whose cache is past the serving threshold. Normal in
+                          moderation under multi-asset polling (/price cold-reads them on
+                          demand); degraded only when freshestAgeMs is also past the threshold.
                         items:
                           type: string
                         example: []
@@ -264,8 +279,9 @@ paths:
                     example: 1
         '503':
           description: |
-            Service degraded. Inspect `price.staleTracked` (assets the warmer is failing to
-            refresh) and `pageLock.waiting` (requests backing up behind a held page).
+            Service degraded: assets are being polled but the page has stopped producing prices
+            (`price.freshestAgeMs` past the serving threshold). Inspect `price.staleTracked`,
+            `pageLock.waiting` (requests backing up behind a held page), and the container logs.
   /wallet/balance:
     get:
       summary: Get wallet balances
