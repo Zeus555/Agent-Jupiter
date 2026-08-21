@@ -1,7 +1,15 @@
 openapi: 3.0.0
 info:
   title: Jupiter Agent API
-  description: API for automating operations on Jupiter Perpetuals via Phantom Wallet.
+  description: |
+    API for automating operations on Jupiter Perpetuals via Phantom Wallet.
+
+    **Source-IP allowlist.** When `TRADE_ALLOWED_IPS` is set in the server's `.env`, every
+    trade-capable route — `/trade/long`, `/trade/short`, `/trade/close`, `/trade/update`,
+    `/trade/estimate`, `/trade/history`, `/connect` and `/browser/visibility` — answers
+    **403** unless the caller's socket address is on the list (loopback is always allowed).
+    Read-only routes (`/price`, `/health`, `/trade/info`, `/wallet/status`, `/wallet/balance`)
+    stay open for monitoring.
   version: 1.0.0
 servers:
   - url: http://192.168.1.91:3011

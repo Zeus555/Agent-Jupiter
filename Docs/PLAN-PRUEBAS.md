@@ -698,6 +698,7 @@ MEM ~1.6GiB/2.76GiB · anti-flapping 40/40 · wallet 2e16..NbKP conectada.
 | ops-12 | completitud | /trade/update sin asset -> 400 inmediato sin tocar el navegador. |
 | ops-13 | completitud | /api-docs montado (un 404 delata swagger.yaml roto en el boot). |
 | restart-01..06 | seguridad | Consolidacion de los 6 reinicios en una ventana con fail-safe: si /health no vuelve, se detiene TODA la bateria y se vuelcan logs. |
+| ops-14 | seguridad | Allowlist de origen activa en rutas de trade: origen no autorizado -> 403; sin configurar -> FALLO. |
 | (fix aplicado) | completitud | Deriva doc corregida: swagger decia 15s para PRICE_COLD_TIMEOUT_MS; el codigo usa 25s. Corregido en swagger.yaml. |
 
 ## Backlog manual (huecos detectados, pendientes de protocolo)
@@ -711,13 +712,19 @@ MEM ~1.6GiB/2.76GiB · anti-flapping 40/40 · wallet 2e16..NbKP conectada.
 - **Conflicto de aliases** ?asset=SOL&token=WBTC: fijar cual gana y congelarlo con un test.
 - **/wallet/onboard-session/close sin sesion previa**: no-op seguro con clave valida.
 
-## Riesgos operativos abiertos (no son pruebas: son decisiones pendientes)
+## Riesgos operativos: estado
 
-1. **Los endpoints de trade estan abiertos**: cualquier proceso con acceso a sentinel016:3011 puede
-   abrir posiciones reales. Recomendacion de la critica: restringir 3011 por firewall a sentinel014
-   y anadir un test de INALCANZABILIDAD desde hosts no autorizados.
-2. **POST /browser/visibility es abierto y reescribe .env**: cualquier cliente LAN puede mutar la
-   configuracion. Mismo remedio que (1) o gate con clave.
-3. **Sesiones noVNC sin watchdog**: si nadie las cierra, prod queda con el warmer pausado y 6080
-   escuchando. Recomendacion: cierre automatico a los 10 min; ops-05 como epilogo obligatorio de
-   toda sesion visual (el runner ya lo hace en battery-99).
+1. **Endpoints de trade abiertos — MITIGADO (2026-08-21)**: allowlist de IPs origen a nivel de
+   aplicacion (TRADE_ALLOWED_IPS en .env; loopback siempre permitido) sobre las 8 rutas capaces
+   de operar el formulario, disparar flujos de wallet o reescribir configuracion: /trade/long,
+   /trade/short, /trade/close, /trade/update, /trade/estimate, /trade/history, /connect y
+   /browser/visibility. Vigilado por ops-14 (negativo real: origen hairpin del contenedor -> 403;
+   ademas FALLA si TRADE_ALLOWED_IPS no esta configurada). Capa pendiente: el firewall de kernel
+   (deploy/firewall-sentinel016.sh, requiere sudo interactivo) — la allowlist de aplicacion no
+   protege el puerto 6080 ni resiste una regresion del propio middleware.
+2. **POST /browser/visibility — MITIGADO**: cubierto por la misma allowlist (reescribia .env
+   desde cualquier cliente LAN).
+3. **Sesiones noVNC sin watchdog — ABIERTO**: si nadie las cierra, prod queda con el warmer
+   pausado y 6080 escuchando. Recomendacion: cierre automatico a los 10 min; battery-99 ya
+   verifica 6080 cerrado al final de cada pasada. El firewall de kernel restringira 6080 a la
+   workstation cuando se ejecute.

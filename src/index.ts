@@ -118,6 +118,46 @@ const requireDebug = (req: express.Request, res: express.Response, next: express
     return res.status(404).json({ error: 'Not found' });
 };
 
+// --- SOURCE-IP ALLOWLIST FOR TRADE-CAPABLE ROUTES ---
+// The trade endpoints execute real trades with the funded wallet and carry no auth of their
+// own, so anyone who can reach sentinel016:3011 can open leveraged positions. The right fix
+// is a kernel firewall, but applying one needs interactive sudo on the host; this gate is
+// the layer the deployment can enforce by itself, versioned and testable. It covers every
+// route that can drive the trade form, trigger a wallet flow, or rewrite configuration —
+// read-only routes stay open for monitoring.
+//
+// TRADE_ALLOWED_IPS is a comma-separated list of source addresses. Loopback is always
+// allowed in code, but note what that covers: only a DIRECT node run (Windows dev). In the
+// containerized deployment, Docker's userland proxy and hairpin NAT rewrite EVERY
+// host-originated connection — loopback included — to the compose network's gateway
+// (172.18.0.1), indistinguishable from the agent's own container. Measured on sentinel016:
+// host curl to localhost, host curl to the LAN IP and a cross-bridge container all arrive
+// as 172.18.0.1. So the env list must include that gateway to keep on-host tooling (the
+// test battery) working; real LAN callers arrive with their true addresses.
+//
+// UNSET means no restriction — the pre-gate behavior — so a missing env cannot take the
+// consumer down; the warning below makes the unprotected state visible instead of silent.
+//
+// The check reads the socket's remote address and never X-Forwarded-For: the header is
+// whatever the caller wants it to be, the socket address is established by the TCP
+// handshake and cannot be usefully spoofed on an established connection.
+const TRADE_ALLOWED_IPS = (process.env.TRADE_ALLOWED_IPS || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+if (TRADE_ALLOWED_IPS.length === 0) {
+    logger.warn('[allowlist] TRADE_ALLOWED_IPS is not set: trade-capable endpoints accept ANY source address.');
+} else {
+    // logger.force so it prints with AGENT_DEBUG=false: the battery greps this exact line
+    // (ops-14) as proof that the gate loaded with configuration in this boot.
+    logger.force(`[allowlist] Restricting trade-capable endpoints to: ${TRADE_ALLOWED_IPS.join(', ')} (+loopback)`);
+}
+const requireAllowedSource = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (TRADE_ALLOWED_IPS.length === 0) return next();
+    const ip = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+    if (ip === '127.0.0.1' || ip === '::1' || TRADE_ALLOWED_IPS.includes(ip)) return next();
+    logger.warn(`[allowlist] Blocked ${req.method} ${req.path} from ${ip}`);
+    return res.status(403).json({ error: `Source ${ip} is not allowed to call trade-capable endpoints. Authorize it in TRADE_ALLOWED_IPS.` });
+};
+
 // Wallet-management endpoints handle the recovery phrase, so they require an API key
 // (X-API-Key header matching WALLET_API_KEY in .env). Fail closed: if no key is configured
 // on the server, these endpoints are rejected entirely.
@@ -445,7 +485,7 @@ app.post('/wallet/forget', requireWalletKey, async (req, res) => {
     }
 });
 
-app.post('/connect', async (req, res) => {
+app.post('/connect', requireAllowedSource, async (req, res) => {
     const start = Date.now();
     try {
         const page = await getPage('https://jup.ag/perps', isPageReady);
@@ -516,7 +556,7 @@ app.get('/wallet/balance', async (req, res) => {
     }
 });
 
-app.post('/trade/long', async (req, res) => {
+app.post('/trade/long', requireAllowedSource, async (req, res) => {
     const start = Date.now();
     try {
         const { asset, amount, leverage, takeProfit, stopLoss, collateral } = req.body;
@@ -528,7 +568,7 @@ app.post('/trade/long', async (req, res) => {
     }
 });
 
-app.post('/trade/short', async (req, res) => {
+app.post('/trade/short', requireAllowedSource, async (req, res) => {
     const start = Date.now();
     try {
         const { asset, amount, leverage, takeProfit, stopLoss, collateral } = req.body;
@@ -551,7 +591,7 @@ app.get('/trade/info', async (req, res) => {
     }
 });
 
-app.get('/trade/history', async (req, res) => {
+app.get('/trade/history', requireAllowedSource, async (req, res) => {
     const start = Date.now();
     try {
         const page = await getPage('https://jup.ag/perps', isPageReady);
@@ -678,7 +718,7 @@ app.get('/debug/click', requireDebug, async (req, res) => {
     }
 });
 
-app.post('/trade/close', async (req, res) => {
+app.post('/trade/close', requireAllowedSource, async (req, res) => {
     const start = Date.now();
     try {
         const page = await getPage('https://jup.ag/perps', isPageReady);
@@ -689,7 +729,7 @@ app.post('/trade/close', async (req, res) => {
     }
 });
 
-app.post('/trade/update', async (req, res) => {
+app.post('/trade/update', requireAllowedSource, async (req, res) => {
     const start = Date.now();
     try {
         const { asset, stopLoss, takeProfit } = req.body;
@@ -779,7 +819,7 @@ app.get('/price', async (req, res) => {
     }
 });
 
-app.post('/trade/estimate', async (req, res) => {
+app.post('/trade/estimate', requireAllowedSource, async (req, res) => {
     const start = Date.now();
     try {
         const { asset, amount, leverage, side } = req.body;
@@ -811,7 +851,7 @@ app.post('/trade/estimate', async (req, res) => {
     }
 });
 
-app.post('/browser/visibility', async (req, res) => {
+app.post('/browser/visibility', requireAllowedSource, async (req, res) => {
     const start = Date.now();
     try {
         const { visible } = req.body;
