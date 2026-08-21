@@ -1,0 +1,2 @@
+# Los scripts de shell se ejecutan en Linux (sentinel016): CRLF los rompe.
+*.sh text eol=lf
