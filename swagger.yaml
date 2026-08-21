@@ -697,9 +697,9 @@ paths:
         for an asset also registers demand for it, which is what puts it on the warmer's list.
 
         **Cold reads are slow.** The first request for an asset after a restart has to navigate and
-        wait for the Jupiter SPA to hydrate — roughly 6-9s in practice, with up to
-        `PRICE_COLD_TIMEOUT_MS` (15s) allowed. **Set your client timeout above 15s.** A shorter one
-        (4s, say) aborts precisely that first request and looks like the agent never answers.
+        wait for the Jupiter SPA to hydrate — roughly 6-25s in practice, with up to
+        `PRICE_COLD_TIMEOUT_MS` (25s) allowed. **Set your client timeout to 30s or more.** A shorter
+        one aborts precisely that first request and looks like the agent never answers.
 
         Validate the value before using it: `price` is the string as displayed, e.g. `"$68392.22"`.
         Strip `$` and `,` and require what remains to be fully numeric.
