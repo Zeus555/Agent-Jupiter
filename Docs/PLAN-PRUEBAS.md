@@ -714,17 +714,26 @@ MEM ~1.6GiB/2.76GiB · anti-flapping 40/40 · wallet 2e16..NbKP conectada.
 
 ## Riesgos operativos: estado
 
-1. **Endpoints de trade abiertos — MITIGADO (2026-08-21)**: allowlist de IPs origen a nivel de
-   aplicacion (TRADE_ALLOWED_IPS en .env; loopback siempre permitido) sobre las 8 rutas capaces
-   de operar el formulario, disparar flujos de wallet o reescribir configuracion: /trade/long,
-   /trade/short, /trade/close, /trade/update, /trade/estimate, /trade/history, /connect y
-   /browser/visibility. Vigilado por ops-14 (negativo real: origen hairpin del contenedor -> 403;
-   ademas FALLA si TRADE_ALLOWED_IPS no esta configurada). Capa pendiente: el firewall de kernel
-   (deploy/firewall-sentinel016.sh, requiere sudo interactivo) — la allowlist de aplicacion no
-   protege el puerto 6080 ni resiste una regresion del propio middleware.
-2. **POST /browser/visibility — MITIGADO**: cubierto por la misma allowlist (reescribia .env
-   desde cualquier cliente LAN).
-3. **Sesiones noVNC sin watchdog — ABIERTO**: si nadie las cierra, prod queda con el warmer
-   pausado y 6080 escuchando. Recomendacion: cierre automatico a los 10 min; battery-99 ya
-   verifica 6080 cerrado al final de cada pasada. El firewall de kernel restringira 6080 a la
-   workstation cuando se ejecute.
+1. **Endpoints de trade abiertos — MITIGADO EN PROFUNDIDAD (2026-08-21)**: dos capas
+   independientes, ambas aplicadas y verificadas en prod.
+   - *Aplicacion*: allowlist de IPs origen (TRADE_ALLOWED_IPS en .env; loopback siempre
+     permitido) sobre las 8 rutas capaces de operar el formulario, disparar flujos de wallet o
+     reescribir configuracion: /trade/long, /trade/short, /trade/close, /trade/update,
+     /trade/estimate, /trade/history, /connect y /browser/visibility. Origen no listado -> 403
+     con log del bloqueo. Vigilada por ops-14 (ademas FALLA si TRADE_ALLOWED_IPS no esta
+     configurada).
+   - *Kernel*: deploy/firewall-sentinel016.sh ejecutado en sentinel016 (2026-08-21). Reglas
+     DOCKER-USER con conntrack --ctorigdstport: los puertos 3011 y 6080 solo aceptan trafico de
+     192.168.1.250 (sentinel014) y 192.168.1.117 (workstation); el resto se descarta (DROP).
+     Persistidas con netfilter-persistent (sobreviven reboots; la instalacion elimino ufw, que
+     estaba deshabilitado y no filtraba puertos publicados por Docker). Verificacion en vivo:
+     sentinel001 (no listado) agota timeout en 3011 y 6080; sentinel014, workstation y
+     localhost responden 200. Esta capa resiste una regresion del middleware y cubre 6080.
+2. **POST /browser/visibility — MITIGADO**: cubierto por ambas capas (reescribia .env desde
+   cualquier cliente LAN; hoy solo alcanzable desde los dos hosts autorizados, y aun desde
+   ellos exige pasar la allowlist).
+3. **Sesiones noVNC sin watchdog — ABIERTO (superficie reducida)**: si nadie las cierra, prod
+   queda con el warmer pausado y 6080 escuchando — pero desde 2026-08-21 el 6080 solo es
+   alcanzable desde sentinel014 y la workstation (kernel DROP para el resto). Recomendacion
+   vigente: cierre automatico a los 10 min; battery-99 ya verifica 6080 cerrado al final de
+   cada pasada.
