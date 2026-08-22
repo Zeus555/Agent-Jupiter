@@ -710,7 +710,9 @@ MEM ~1.6GiB/2.76GiB · anti-flapping 40/40 · wallet 2e16..NbKP conectada.
 - **ConnKeeper en regimen**: observacion pasiva 45-60 min (connected:true en todas las muestras, sin robar el frente).
 - **Fallback de /wallet/balance con wallet_address.txt borrado** (unico camino con escritura a disco).
 - **Conflicto de aliases** ?asset=SOL&token=WBTC: fijar cual gana y congelarlo con un test.
-- **/wallet/onboard-session/close sin sesion previa**: no-op seguro con clave valida.
+- ~~/wallet/onboard-session/close sin sesion previa~~ — VERIFICADO 2026-08-22 durante la
+  prueba del watchdog: no-op seguro con clave valida (responde con la address y reanuda
+  warmers sin efectos adversos).
 
 ## Riesgos operativos: estado
 
@@ -732,8 +734,12 @@ MEM ~1.6GiB/2.76GiB · anti-flapping 40/40 · wallet 2e16..NbKP conectada.
 2. **POST /browser/visibility — MITIGADO**: cubierto por ambas capas (reescribia .env desde
    cualquier cliente LAN; hoy solo alcanzable desde los dos hosts autorizados, y aun desde
    ellos exige pasar la allowlist).
-3. **Sesiones noVNC sin watchdog — ABIERTO (superficie reducida)**: si nadie las cierra, prod
-   queda con el warmer pausado y 6080 escuchando — pero desde 2026-08-21 el 6080 solo es
-   alcanzable desde sentinel014 y la workstation (kernel DROP para el resto). Recomendacion
-   vigente: cierre automatico a los 10 min; battery-99 ya verifica 6080 cerrado al final de
-   cada pasada.
+3. **Sesiones noVNC sin watchdog — MITIGADO (2026-08-22)**: watchdog de cierre automatico
+   implementado. Al abrir una sesion se arma un temporizador (ONBOARD_SESSION_TTL_MS, por
+   defecto 10 min); al expirar cierra por el MISMO camino que POST /wallet/onboard-session/close
+   (funcion compartida closeOnboardSession: mata noVNC, sale de maintenance, reconecta wallet y
+   relanza warmers). Single-flight contra la carrera watchdog-vs-cierre-manual; la respuesta de
+   apertura anuncia autoCloseAfterMinutes. Verificado en prod con TTL de prueba de 60s: disparo
+   puntual con log [vnc] watchdog, 6080 cerrado, health 200 en 3s y wallet reconectada con la
+   misma address; .env restaurado byte a byte tras la prueba. Capas previas siguen: kernel DROP
+   de 6080 salvo sentinel014/workstation y battery-99 verificando 6080 cerrado.

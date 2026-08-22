@@ -120,7 +120,9 @@ paths:
         or connect the wallet by hand — used because Phantom's onboarding/approval popups do not
         render reliably under headless automation. Returns a URL + a one-time VNC password.
         While the session is open, price warming is paused. When finished, call
-        POST /wallet/onboard-session/close. Requires the `X-API-Key` header.
+        POST /wallet/onboard-session/close. If forgotten, a watchdog auto-closes the session
+        after 10 minutes (ONBOARD_SESSION_TTL_MS overrides, in ms) and the agent resumes on
+        its own. Requires the `X-API-Key` header.
       security:
         - ApiKeyAuth: []
       responses:
@@ -137,6 +139,9 @@ paths:
                   vncPassword:
                     type: string
                     example: "a1b2c3d4"
+                  autoCloseAfterMinutes:
+                    type: integer
+                    example: 10
                   phantomOnboardingUrl:
                     type: string
                     example: "chrome-extension://bfnaelmomeimhlpmgjnjophhpkkoljpa/onboarding.html"
@@ -147,7 +152,8 @@ paths:
       summary: Close the visual onboarding session
       description: |
         Stops the noVNC session, resumes normal operation and reconnects the wallet.
-        Requires the `X-API-Key` header.
+        Idempotent with the auto-close watchdog: whichever runs first wins, the other is a
+        no-op. Requires the `X-API-Key` header.
       security:
         - ApiKeyAuth: []
       responses:

@@ -395,44 +395,20 @@ const stopPopupFitter = () => {
     maximizedPopupWins.clear();
 };
 
-// Start a secure, on-demand VISUAL onboarding session (noVNC) so a human can create/import
-// or change the wallet reliably (Phantom's onboarding doesn't render reliably headless).
-// Pauses background browser activity while open. Returns a one-time-password-protected URL.
-app.post('/wallet/onboard-session', requireWalletKey, async (req, res) => {
-    const start = Date.now();
-    try {
-        await getBrowserContext(); // ensure the browser (and Xvfb display) is up
-        setMaintenanceMode(true);  // pause warmer/self-healing so it doesn't disturb the manual flow
-        const { webPort, password } = startVncSession();
-        startPopupFitter();        // keep the Phantom popup shrunk so its buttons stay visible
-        // Build the noVNC URL with a host the remote browser can actually reach. req.hostname
-        // is right when called through the LAN IP, but falls back to 'localhost' if the API was
-        // hit locally (e.g. curl on the server) — which would be unreachable from another machine.
-        // Prefer PUBLIC_HOST, then a non-loopback req.hostname, then the known LAN IP.
-        const reqHost = req.hostname;
-        const host = process.env.PUBLIC_HOST
-            || ((reqHost && reqHost !== 'localhost' && reqHost !== '127.0.0.1') ? reqHost : '192.168.1.91');
-        const extId = process.env.PHANTOM_EXTENSION_ID || 'bfnaelmomeimhlpmgjnjophhpkkoljpa';
-        res.json({
-            message: 'Visual onboarding session started. Open the URL, connect with vncPassword, then in the browser create or import your wallet in Phantom. IMPORTANT: set the Phantom password equal to PHANTOM_PASSWORD in .env, and save your seed phrase. When finished, call POST /wallet/onboard-session/close.',
-            url: `http://${host}:${webPort}/vnc.html?autoconnect=1&resize=remote`,
-            vncPassword: password,
-            phantomOnboardingUrl: `chrome-extension://${extId}/onboarding.html`,
-            note: 'If Phantom renders blank, reload the page (Ctrl+R) in the remote view until it paints.',
-            durationMs: Date.now() - start
-        });
-    } catch (error: any) {
-        stopPopupFitter();
-        setMaintenanceMode(false);
-        stopVncSession();
-        res.status(500).json({ error: error.message, durationMs: Date.now() - start });
-    }
-});
+// A forgotten onboarding session leaves the warmer paused and 6080 listening, so sessions
+// auto-close after ONBOARD_SESSION_TTL_MS (default 10 min). Closing (manually or by the
+// watchdog) always goes through closeOnboardSession, which also resumes normal operation.
+const ONBOARD_TTL_MS = Number(process.env.ONBOARD_SESSION_TTL_MS) || 600000;
+let onboardWatchdog: ReturnType<typeof setTimeout> | null = null;
+const clearOnboardWatchdog = () => { if (onboardWatchdog) { clearTimeout(onboardWatchdog); onboardWatchdog = null; } };
 
-// Close the visual onboarding session, resume normal operation, and report the active wallet.
-app.post('/wallet/onboard-session/close', requireWalletKey, async (req, res) => {
-    const start = Date.now();
-    try {
+let onboardCloseInFlight: Promise<string> | null = null;
+const closeOnboardSession = (): Promise<string> => {
+    // Single-flight: the watchdog and a manual /close can race; running the resume sequence
+    // twice would double-start warmers.
+    if (onboardCloseInFlight) return onboardCloseInFlight;
+    onboardCloseInFlight = (async () => {
+        clearOnboardWatchdog();
         stopPopupFitter();
         stopVncSession();
         setMaintenanceMode(false);
@@ -446,6 +422,58 @@ app.post('/wallet/onboard-session/close', requireWalletKey, async (req, res) => 
             const name = await getWalletName(page);
             if (name && name !== 'Not Connected' && name !== 'Unknown') { address = name; cachedWalletAddress = name; }
         } catch {}
+        return address;
+    })().finally(() => { onboardCloseInFlight = null; });
+    return onboardCloseInFlight;
+};
+
+// Start a secure, on-demand VISUAL onboarding session (noVNC) so a human can create/import
+// or change the wallet reliably (Phantom's onboarding doesn't render reliably headless).
+// Pauses background browser activity while open. Returns a one-time-password-protected URL.
+app.post('/wallet/onboard-session', requireWalletKey, async (req, res) => {
+    const start = Date.now();
+    try {
+        await getBrowserContext(); // ensure the browser (and Xvfb display) is up
+        setMaintenanceMode(true);  // pause warmer/self-healing so it doesn't disturb the manual flow
+        const { webPort, password } = startVncSession();
+        startPopupFitter();        // keep the Phantom popup shrunk so its buttons stay visible
+        clearOnboardWatchdog();
+        onboardWatchdog = setTimeout(() => {
+            onboardWatchdog = null;
+            logger.force(`[vnc] watchdog: onboarding session still open after ${Math.round(ONBOARD_TTL_MS / 60000)} min; auto-closing and resuming normal operation.`);
+            closeOnboardSession().catch((e: any) => logger.error('[vnc] watchdog close failed:', e?.message));
+        }, ONBOARD_TTL_MS);
+        // Build the noVNC URL with a host the remote browser can actually reach. req.hostname
+        // is right when called through the LAN IP, but falls back to 'localhost' if the API was
+        // hit locally (e.g. curl on the server) — which would be unreachable from another machine.
+        // Prefer PUBLIC_HOST, then a non-loopback req.hostname, then the known LAN IP.
+        const reqHost = req.hostname;
+        const host = process.env.PUBLIC_HOST
+            || ((reqHost && reqHost !== 'localhost' && reqHost !== '127.0.0.1') ? reqHost : '192.168.1.91');
+        const extId = process.env.PHANTOM_EXTENSION_ID || 'bfnaelmomeimhlpmgjnjophhpkkoljpa';
+        res.json({
+            message: 'Visual onboarding session started. Open the URL, connect with vncPassword, then in the browser create or import your wallet in Phantom. IMPORTANT: set the Phantom password equal to PHANTOM_PASSWORD in .env, and save your seed phrase. When finished, call POST /wallet/onboard-session/close. If forgotten, the session auto-closes and the agent resumes on its own (see autoCloseAfterMinutes).',
+            url: `http://${host}:${webPort}/vnc.html?autoconnect=1&resize=remote`,
+            vncPassword: password,
+            autoCloseAfterMinutes: Math.round(ONBOARD_TTL_MS / 60000),
+            phantomOnboardingUrl: `chrome-extension://${extId}/onboarding.html`,
+            note: 'If Phantom renders blank, reload the page (Ctrl+R) in the remote view until it paints.',
+            durationMs: Date.now() - start
+        });
+    } catch (error: any) {
+        clearOnboardWatchdog();
+        stopPopupFitter();
+        setMaintenanceMode(false);
+        stopVncSession();
+        res.status(500).json({ error: error.message, durationMs: Date.now() - start });
+    }
+});
+
+// Close the visual onboarding session, resume normal operation, and report the active wallet.
+app.post('/wallet/onboard-session/close', requireWalletKey, async (req, res) => {
+    const start = Date.now();
+    try {
+        const address = await closeOnboardSession();
         res.json({ message: 'Session closed; agent resumed.', address, durationMs: Date.now() - start });
     } catch (error: any) {
         res.status(500).json({ error: error.message, durationMs: Date.now() - start });
