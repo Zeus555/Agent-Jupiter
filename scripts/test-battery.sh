@@ -515,8 +515,10 @@ if $DEBUGWIN; then
     trap 'cd "'"$COMPOSE_DIR"'"; [ -f .env.bak.battery ] && mv -f .env.bak.battery .env; docker compose up -d > /dev/null 2>&1' EXIT
     sed -i 's/^AGENT_DEBUG=.*/AGENT_DEBUG=true/' .env
     docker compose up -d > /dev/null 2>&1
+    # || true: bajo set -e, el reset de conexion del contenedor arrancando (curl 56/7)
+    # mataba el subshell en la primera iteracion del bucle de espera.
     for i in $(seq 1 36); do
-      C=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$BASE/health" 2>/dev/null); [ "$C" = "200" ] && break; sleep 5
+      C=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$BASE/health" 2>/dev/null || true); [ "$C" = "200" ] && break; sleep 5
     done
     sleep 15
     # wallet-tabs-07: exactamente 2 pestanas (phantom + trading).
@@ -544,7 +546,12 @@ fi
 # Produccion debe quedar EXACTAMENTE como la encontramos.
 E99=""
 get "$BASE/health" 20;                       [ "$CODE" = "200" ] || E99="$E99 health=$CODE"
-A9=$(curl -s -m 30 "$BASE/wallet/status" | jq -r .address); [ "$A9" = "$SNAP_ADDR" ] || E99="$E99 addr:$SNAP_ADDR->$A9"
+A9=$(curl -s -m 30 "$BASE/wallet/status" | jq -r .address)
+for i in $(seq 1 12); do  # la address tarda en volver tras recrear el contenedor (ConnKeeper)
+  [ "$A9" = "$SNAP_ADDR" ] && break; sleep 10
+  A9=$(curl -s -m 30 "$BASE/wallet/status" | jq -r .address)
+done
+[ "$A9" = "$SNAP_ADDR" ] || E99="$E99 addr:$SNAP_ADDR->$A9"
 C9=$(curl -s -m 90 "$BASE/trade/info" | jq -r .count);      [ "$C9" = "$SNAP_COUNT" ] || E99="$E99 posiciones:$SNAP_COUNT->$C9"
 if ! $DEBUGWIN; then  # con --debug-window el .env se restaura por copia: el hash debe coincidir igual
   E9=$(sha256sum "$COMPOSE_DIR/.env" | cut -d' ' -f1);      [ "$E9" = "$SNAP_ENV" ] || E99="$E99 .env-modificado"
